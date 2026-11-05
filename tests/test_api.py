@@ -6,6 +6,7 @@ import unittest
 import urllib.error
 import urllib.request
 from pathlib import Path
+from unittest.mock import patch
 
 import server
 
@@ -68,15 +69,17 @@ class EduStreamApiTests(unittest.TestCase):
         dashboard = self.request(client, "/api/dashboard")
         self.assertEqual(dashboard["role"], "learner")
         self.assertEqual(dashboard["subscription"]["plan_code"], "starter")
-        self.assertTrue(any(item["entitled"] for item in dashboard["items"]))
-        self.assertTrue(any(not item["entitled"] for item in dashboard["items"]))
+        self.assertEqual([item["id"] for item in dashboard["items"]], [1, 2, 3])
+        self.assertEqual([bool(item["entitled"]) for item in dashboard["items"]], [True, True, False])
+        self.assertTrue(all(item["has_quiz"] for item in dashboard["items"]))
+        self.assertTrue(all(item["quiz_question_count"] >= 5 for item in dashboard["items"]))
 
     def test_locked_content_is_denied_then_unlocked_by_plus_plan(self):
         client = self.login("learner")
         dashboard = self.request(client, "/api/dashboard")
         locked = next(item for item in dashboard["items"] if not item["entitled"])
-        denied = self.request(client, f"/api/access/{locked['id']}", expected=403)
-        self.assertIn("not included", denied["error"])
+        self.assertEqual(locked["id"], 3)
+        self.request(client, f"/api/access/{locked['id']}", expected=403)
 
         plus = next(plan for plan in dashboard["plans"] if plan["code"] == "plus")
         changed = self.request(client, "/api/subscription", "POST", {"plan_id": plus["id"]})
@@ -254,6 +257,178 @@ class EduStreamApiTests(unittest.TestCase):
         self.request(
             learner, "/api/quiz/99999/submit", "POST", {"answers": self.quiz_answers()}, expected=404
         )
+
+    def test_quiz_sql_and_web_scores_respect_subscription_access(self):
+        learner = self.login("learner")
+        plans = self.request(learner, "/api/dashboard")["plans"]
+        starter = next(plan for plan in plans if plan["code"] == "starter")
+        plus = next(plan for plan in plans if plan["code"] == "plus")
+        self.request(learner, "/api/subscription", "POST", {"plan_id": starter["id"]})
+        sql_quiz = self.request(learner, "/api/quiz/2")["quiz"]
+        self.assertEqual(sql_quiz["item_id"], 2)
+        self.request(learner, "/api/quiz/3", expected=403)
+        self.request(learner, "/api/quiz/3/submit", "POST", {"answers": {}}, expected=403)
+        self.request(learner, "/api/subscription", "POST", {"plan_id": plus["id"]})
+        for item_id in (2, 3):
+            with self.subTest(item_id=item_id):
+                quiz = self.request(learner, f"/api/quiz/{item_id}")["quiz"]
+                self.assertEqual(quiz["item_id"], item_id)
+                self.assertGreaterEqual(len(quiz["questions"]), 5)
+                self.assertNotIn("correct_option_id", json.dumps(quiz))
+                self.assertNotIn("explanation", json.dumps(quiz))
+                answers = {question["id"]: question["correct_option_id"] for question in server.QUIZZES[item_id]["questions"]}
+                result = self.request(learner, f"/api/quiz/{item_id}/submit", "POST", {"answers": answers})["result"]
+                self.assertEqual(result["score"], 100)
+                self.assertEqual(result["correct"], len(quiz["questions"]))
+                self.assertTrue(result["passed"])
+                self.assertTrue(all(feedback["correct"] for feedback in result["feedback"]))
+                self.assertEqual(self.request(learner, f"/api/quiz/{item_id}")["last_attempt"]["score"], 100)
+
+    def test_visibility_hides_courses_without_quizzes_even_for_plus(self):
+        learner = self.login("learner")
+        dashboard = self.request(learner, "/api/dashboard")
+        plus = next(plan for plan in dashboard["plans"] if plan["code"] == "plus")
+        self.request(learner, "/api/subscription", "POST", {"plan_id": plus["id"]})
+        with server.connect_db() as connection:
+            before = [tuple(row) for row in connection.execute("SELECT * FROM progress ORDER BY user_id, learning_item_id")]
+            connection.execute("UPDATE learning_items SET status = 'approved' WHERE id = 4")
+            connection.execute("INSERT OR IGNORE INTO plan_entitlements (plan_id, learning_item_id) VALUES (?, 4)", (plus["id"],))
+        try:
+            dashboard = self.request(learner, "/api/dashboard")
+            self.assertEqual([item["id"] for item in dashboard["items"]], [1, 2, 3])
+            self.assertEqual(dashboard["stats"]["available"], 3)
+            self.assertEqual(dashboard["stats"]["locked"], 0)
+            self.request(learner, "/api/access/4", expected=403)
+            self.request(learner, "/api/progress", "POST", {"item_id": 4, "progress": 100}, expected=403)
+            self.request(learner, "/api/quiz/4", expected=404)
+            # Even another approved course with a quiz stays outside this release.
+            with patch.dict(server.QUIZZES, {4: {**server.QUIZZES[1], "item_id": 4}}):
+                self.assertEqual([item["id"] for item in self.request(learner, "/api/dashboard")["items"]], [1, 2, 3])
+                self.request(learner, "/api/access/4", expected=403)
+                self.request(learner, "/api/quiz/4", expected=403)
+        finally:
+            with server.connect_db() as connection:
+                connection.execute("UPDATE learning_items SET status = 'pending' WHERE id = 4")
+                connection.execute("DELETE FROM plan_entitlements WHERE learning_item_id = 4 AND plan_id = ?", (plus["id"],))
+        with server.connect_db() as connection:
+            after = [tuple(row) for row in connection.execute("SELECT * FROM progress ORDER BY user_id, learning_item_id")]
+        self.assertEqual(after, before)
+        educator_items = self.request(self.login("educator"), "/api/dashboard")["items"]
+        self.assertTrue({1, 2, 3, 4}.issubset({item["id"] for item in educator_items}))
+
+    def test_visibility_hides_indonesian_quiz_and_rejects_cached_actions(self):
+        learner = self.login("learner")
+        answers = self.quiz_answers()
+        initial_attempts = self.quiz_attempt_count()
+        with server.connect_db() as connection:
+            before = [tuple(row) for row in connection.execute("SELECT * FROM progress ORDER BY user_id, learning_item_id")]
+            connection.execute("UPDATE learning_items SET language = 'id' WHERE id = 1")
+        try:
+            dashboard = self.request(learner, "/api/dashboard")
+            self.assertEqual([item["id"] for item in dashboard["items"]], [2, 3])
+            entitled = [item for item in dashboard["items"] if item["entitled"]]
+            self.assertEqual(dashboard["stats"]["available"], len(entitled))
+            self.assertEqual(dashboard["stats"]["completed"], sum(item["progress_percent"] == 100 for item in entitled))
+            self.assertEqual(dashboard["stats"]["average_progress"], round(sum(item["progress_percent"] for item in entitled) / len(entitled)))
+            self.request(learner, "/api/access/1", expected=403)
+            self.request(learner, "/api/progress", "POST", {"item_id": 1, "progress": 100}, expected=403)
+            self.request(learner, "/api/quiz/1", expected=403)
+            self.request(learner, "/api/quiz/1/submit", "POST", {"answers": answers}, expected=403)
+            self.assertEqual(self.quiz_attempt_count(), initial_attempts)
+            with server.connect_db() as connection:
+                after = [tuple(row) for row in connection.execute("SELECT * FROM progress ORDER BY user_id, learning_item_id")]
+            self.assertEqual(after, before)
+            educator_items = self.request(self.login("educator"), "/api/dashboard")["items"]
+            self.assertTrue(any(item["id"] == 1 for item in educator_items))
+        finally:
+            with server.connect_db() as connection:
+                connection.execute("UPDATE learning_items SET language = 'en' WHERE id = 1")
+
+    def test_visibility_requires_nonempty_quiz_and_approved_status(self):
+        learner = self.login("learner")
+        with patch.dict(server.QUIZZES, {1: {**server.QUIZZES[1], "questions": []}}):
+            self.assertEqual([item["id"] for item in self.request(learner, "/api/dashboard")["items"]], [2, 3])
+            self.request(learner, "/api/access/1", expected=403)
+            self.request(learner, "/api/quiz/1", expected=404)
+            self.request(learner, "/api/quiz/1/submit", "POST", {"answers": {}}, expected=404)
+        try:
+            for status in ("pending", "rejected"):
+                with self.subTest(status=status):
+                    with server.connect_db() as connection:
+                        connection.execute("UPDATE learning_items SET status = ? WHERE id = 1", (status,))
+                    self.assertEqual([item["id"] for item in self.request(learner, "/api/dashboard")["items"]], [2, 3])
+                    self.request(learner, "/api/access/1", expected=403)
+                    self.request(learner, "/api/quiz/1", expected=403)
+        finally:
+            with server.connect_db() as connection:
+                connection.execute("UPDATE learning_items SET status = 'approved' WHERE id = 1")
+
+    def test_visibility_stats_exclude_hidden_course_progress(self):
+        learner = self.login("learner")
+        with server.connect_db() as connection:
+            learner_id = connection.execute("SELECT id FROM users WHERE email = 'learner@edustream.local'").fetchone()[0]
+            previous = connection.execute("SELECT * FROM progress WHERE user_id = ? AND learning_item_id = 4", (learner_id,)).fetchone()
+            connection.execute(
+                "INSERT INTO progress (user_id, learning_item_id, progress_percent, completed_at, updated_at) VALUES (?, 4, 100, ?, ?) "
+                "ON CONFLICT(user_id, learning_item_id) DO UPDATE SET progress_percent = 100",
+                (learner_id, server.iso_now(), server.iso_now()),
+            )
+        try:
+            dashboard = self.request(learner, "/api/dashboard")
+            entitled = [item for item in dashboard["items"] if item["entitled"]]
+            self.assertFalse(any(item["id"] == 4 for item in dashboard["items"]))
+            self.assertEqual(dashboard["stats"]["average_progress"], round(sum(item["progress_percent"] for item in entitled) / len(entitled)))
+            self.assertEqual(dashboard["stats"]["completed"], sum(item["progress_percent"] == 100 for item in entitled))
+        finally:
+            with server.connect_db() as connection:
+                connection.execute("DELETE FROM progress WHERE user_id = ? AND learning_item_id = 4", (learner_id,))
+                if previous:
+                    columns = ", ".join(previous.keys())
+                    placeholders = ", ".join("?" for _ in previous.keys())
+                    connection.execute(f"INSERT INTO progress ({columns}) VALUES ({placeholders})", tuple(previous))
+
+    def test_visibility_content_language_is_saved_and_validated(self):
+        educator = self.login("educator")
+        payload = {
+            "title": "Keamanan Digital Indonesia",
+            "category": "Cybersecurity",
+            "description": "Materi pembelajaran tentang kata sandi dan keamanan akun untuk siswa.",
+            "content_type": "course",
+            "duration_minutes": 45,
+            "language": "id",
+        }
+        created = self.request(educator, "/api/content", "POST", payload)
+        with server.connect_db() as connection:
+            self.assertEqual(connection.execute("SELECT language FROM learning_items WHERE id = ?", (created["item_id"],)).fetchone()[0], "id")
+            count = connection.execute("SELECT COUNT(*) FROM learning_items").fetchone()[0]
+        self.request(educator, "/api/content", "POST", {**payload, "language": "unsupported"}, expected=400)
+        with server.connect_db() as connection:
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM learning_items").fetchone()[0], count)
+
+    def test_visibility_migrates_legacy_database_without_losing_records(self):
+        import sqlite3
+
+        with tempfile.TemporaryDirectory() as directory:
+            legacy_path = Path(directory) / "legacy.db"
+            with server.connect_db() as source:
+                legacy = sqlite3.connect(legacy_path)
+                try:
+                    source.backup(legacy)
+                    legacy.execute("ALTER TABLE learning_items DROP COLUMN language")
+                    legacy.commit()
+                    before_items = legacy.execute("SELECT id, title, status FROM learning_items ORDER BY id").fetchall()
+                    before_progress = legacy.execute("SELECT * FROM progress ORDER BY user_id, learning_item_id").fetchall()
+                    before_users = legacy.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+                finally:
+                    legacy.close()
+            with patch.object(server, "DB_PATH", legacy_path):
+                server.initialize_database()
+                server.initialize_database()  # Restarts must not recreate or duplicate data.
+                with server.connect_db() as connection:
+                    self.assertEqual([tuple(row) for row in connection.execute("SELECT id, title, status FROM learning_items ORDER BY id")], before_items)
+                    self.assertEqual([tuple(row) for row in connection.execute("SELECT * FROM progress ORDER BY user_id, learning_item_id")], before_progress)
+                    self.assertEqual(connection.execute("SELECT COUNT(*) FROM users").fetchone()[0], before_users)
+                    self.assertTrue(all(row[0] == "en" for row in connection.execute("SELECT language FROM learning_items")))
 
 
 if __name__ == "__main__":

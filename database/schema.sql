@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS learning_items (
     category TEXT NOT NULL,
     description TEXT NOT NULL,
     content_type TEXT NOT NULL CHECK (content_type IN ('course', 'video', 'article', 'quiz', 'workshop')),
+    language TEXT NOT NULL DEFAULT 'en' CHECK (language IN ('en', 'id')),
     duration_minutes INTEGER NOT NULL CHECK (duration_minutes > 0),
     created_by INTEGER NOT NULL,
     status TEXT NOT NULL CHECK (status IN ('pending', 'approved', 'rejected')),

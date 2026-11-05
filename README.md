@@ -35,7 +35,8 @@ These credentials are for a local prototype only.
 - Course guides explaining why a topic matters, its learning goals, and practical examples
 - Twelve credited YouTube video recommendations with thumbnails, with four resources per curated topic
 - Learner progress tracking
-- A five-question Digital Safety practice quiz with clickable answers, saved scores, feedback, and retakes
+- Five-question practice quizzes for Digital Safety, SQL Essentials, and Secure Web, with clickable answers, saved scores, feedback, and retakes
+- A curated learner catalogue limited to these three English courses; other resources stay hidden from students
 - Educator content submission workflow
 - Administrator content approval and rejection
 - Payment records and audit events
@@ -67,9 +68,13 @@ Each curated guide has one featured video and three related videos covering digi
 
 ## Practice quiz
 
-Digital Safety Foundations includes a five-question practice quiz. Learners can open it from the dashboard, course card, course guide, or protected learning dialog. Entire answer rows are clickable, keyboard controls work, and students can change answers or retake the quiz after receiving feedback. Scores are graded on the server and saved to the signed-in learner's own account. A quiz result does not automatically change course progress.
+Digital Safety Foundations, SQL Essentials, and Secure Web Application Design each include a five-question practice quiz. Learners can open quizzes from the dashboard, course card, course guide, or protected learning dialog. Entire answer rows are clickable, keyboard controls work, and students can change answers or retake the quiz after receiving feedback. Scores are graded on the server and saved to the signed-in learner's own account. A quiz result does not automatically change course progress.
 
-SQL Essentials and Secure Web Application Design currently provide course guides, videos, and progress tracking but do not yet include interactive quizzes. The Digital Safety quiz requires an active subscription that includes the course.
+Each quiz requires an active subscription that includes its course. Starter includes Digital Safety and SQL Essentials; Secure Web requires Plus or Team.
+
+Only these three selected courses (IDs 1–3) are eligible for the learner catalogue. They must be approved, have a nonempty quiz, and be marked English. All other resources, including Indonesian content, stay hidden from learners even after approval. The same restriction applies to direct content access, progress updates, and quiz requests. Existing records and educator/admin review access are preserved. Learner statistics count only visible courses.
+
+The content form records English (`en`) or Bahasa Indonesia (`id`). Language is educator-supplied metadata, not automatic language detection. Existing curated English records receive `en` during the automatic schema migration. To expand the learner catalogue later, review `LEARNER_COURSE_IDS` in `server.py` and add a matching question bank in `quizzes.py`.
 
 After pulling a code update, restart the server so new API routes and database tables are loaded. Existing data is preserved because schema additions run automatically at startup; do not use `--reset` for a normal update.
 

@@ -28,6 +28,7 @@ SCHEMA_PATH = ROOT / "database" / "schema.sql"
 SESSION_COOKIE = "edustream_session"
 SESSION_TTL = timedelta(hours=8)
 SESSIONS: dict[str, dict] = {}
+LEARNER_COURSE_IDS = frozenset({1, 2, 3})
 
 
 class ClosingConnection(sqlite3.Connection):
@@ -190,6 +191,12 @@ def initialize_database(reset: bool = False) -> None:
         DB_PATH.unlink()
     with connect_db() as connection:
         connection.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
+        columns = {row["name"] for row in connection.execute("PRAGMA table_info(learning_items)")}
+        if "language" not in columns:
+            # Existing curated courses are English; keep all records and progress.
+            connection.execute(
+                "ALTER TABLE learning_items ADD COLUMN language TEXT NOT NULL DEFAULT 'en' CHECK (language IN ('en', 'id'))"
+            )
         seed_database(connection)
 
 
@@ -217,7 +224,23 @@ def active_subscription(connection: sqlite3.Connection, user_id: int) -> sqlite3
     ).fetchone()
 
 
+def learner_visible(item: dict | sqlite3.Row) -> bool:
+    """Publish only approved, non-Indonesian resources with a usable quiz."""
+    quiz = QUIZZES.get(item["id"])
+    return (
+        item["id"] in LEARNER_COURSE_IDS
+        and item["status"] == "approved"
+        and item["language"] != "id"
+        and bool(quiz and quiz.get("questions"))
+    )
+
+
 def has_entitlement(connection: sqlite3.Connection, user_id: int, item_id: int) -> bool:
+    item = connection.execute(
+        "SELECT id, status, language FROM learning_items WHERE id = ?", (item_id,)
+    ).fetchone()
+    if not item or not learner_visible(item):
+        return False
     return connection.execute(
         """
         SELECT 1
@@ -377,13 +400,13 @@ class EduStreamHandler(BaseHTTPRequestHandler):
             item_id = int(match.group(1))
             with connect_db() as connection:
                 item = connection.execute(
-                    "SELECT id, title, category, description, content_type, duration_minutes, status FROM learning_items WHERE id = ?",
+                    "SELECT id, title, category, description, content_type, language, duration_minutes, status FROM learning_items WHERE id = ?",
                     (item_id,),
                 ).fetchone()
                 if not item or not has_entitlement(connection, user["id"], item_id):
                     record_audit(connection, user["id"], "access_denied", f"Learning item {item_id}")
                     connection.commit()
-                    self._error("This learning item is not included in your active subscription.", HTTPStatus.FORBIDDEN)
+                    self._error("This learning item is unavailable or not included in your active subscription.", HTTPStatus.FORBIDDEN)
                     return
                 record_audit(connection, user["id"], "content_accessed", f"Learning item {item_id}")
                 connection.commit()
@@ -480,7 +503,7 @@ class EduStreamHandler(BaseHTTPRequestHandler):
                     dict(row)
                     for row in connection.execute(
                         """
-                        SELECT li.id, li.title, li.category, li.description, li.content_type,
+                        SELECT li.id, li.title, li.category, li.description, li.content_type, li.language, li.status,
                                li.duration_minutes,
                                CASE WHEN pe.learning_item_id IS NULL THEN 0 ELSE 1 END AS entitled,
                                COALESCE(p.progress_percent, 0) AS progress_percent
@@ -494,6 +517,7 @@ class EduStreamHandler(BaseHTTPRequestHandler):
                         """,
                         (plan_id, user["id"]),
                     )
+                    if learner_visible(row)
                 ]
                 for item in items:
                     item["has_quiz"] = item["id"] in QUIZZES
@@ -527,7 +551,7 @@ class EduStreamHandler(BaseHTTPRequestHandler):
                     dict(row)
                     for row in connection.execute(
                         """
-                        SELECT id, title, category, description, content_type, duration_minutes, status, created_at
+                        SELECT id, title, category, description, content_type, language, duration_minutes, status, created_at
                         FROM learning_items WHERE created_by = ? ORDER BY id DESC
                         """,
                         (user["id"],),
@@ -549,7 +573,7 @@ class EduStreamHandler(BaseHTTPRequestHandler):
                 dict(row)
                 for row in connection.execute(
                     """
-                    SELECT li.id, li.title, li.category, li.description, li.content_type,
+                    SELECT li.id, li.title, li.category, li.description, li.content_type, li.language,
                            li.duration_minutes, li.status, li.created_at, u.full_name AS educator_name
                     FROM learning_items li
                     JOIN users u ON u.id = li.created_by
@@ -597,7 +621,7 @@ class EduStreamHandler(BaseHTTPRequestHandler):
 
     def _quiz_for_user(self, connection: sqlite3.Connection, user: dict, item_id: int) -> dict | None:
         quiz = QUIZZES.get(item_id)
-        if not quiz:
+        if not quiz or not quiz.get("questions"):
             self._error("There is no practice quiz for this learning item.", HTTPStatus.NOT_FOUND)
             return None
         if not has_entitlement(connection, user["id"], item_id):
@@ -739,6 +763,7 @@ class EduStreamHandler(BaseHTTPRequestHandler):
         category = str(body.get("category", "")).strip()
         description = str(body.get("description", "")).strip()
         content_type = str(body.get("content_type", "course")).strip().lower()
+        language = str(body.get("language", "en")).strip().lower()
         try:
             duration = int(body.get("duration_minutes", 0))
         except (TypeError, ValueError):
@@ -751,6 +776,8 @@ class EduStreamHandler(BaseHTTPRequestHandler):
             raise ValueError("Description must contain between 20 and 500 characters.")
         if content_type not in {"course", "video", "article", "quiz", "workshop"}:
             raise ValueError("Select a supported content type.")
+        if language not in {"en", "id"}:
+            raise ValueError("Select English or Bahasa Indonesia as the content language.")
         if not 5 <= duration <= 600:
             raise ValueError("Duration must be between 5 and 600 minutes.")
         status = "approved" if user["role"] == "admin" else "pending"
@@ -758,10 +785,10 @@ class EduStreamHandler(BaseHTTPRequestHandler):
             cursor = connection.execute(
                 """
                 INSERT INTO learning_items
-                    (title, category, description, content_type, duration_minutes, created_by, status, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    (title, category, description, content_type, language, duration_minutes, created_by, status, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (title, category, description, content_type, duration, user["id"], status, iso_now()),
+                (title, category, description, content_type, language, duration, user["id"], status, iso_now()),
             )
             record_audit(connection, user["id"], "content_created", f"Learning item {cursor.lastrowid}: {title} ({status})")
             connection.commit()
