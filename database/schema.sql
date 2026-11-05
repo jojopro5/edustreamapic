@@ -100,6 +100,30 @@ CREATE TABLE IF NOT EXISTS quiz_attempts (
 CREATE INDEX IF NOT EXISTS idx_quiz_attempts_user_item
     ON quiz_attempts(user_id, learning_item_id, id DESC);
 
+CREATE TABLE IF NOT EXISTS assessment_attempts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    learning_item_id INTEGER NOT NULL REFERENCES learning_items(id) ON DELETE CASCADE,
+    assessment_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('module', 'final')),
+    status TEXT NOT NULL CHECK (status IN ('in_progress', 'submitted')),
+    questions_json TEXT NOT NULL,
+    answers_json TEXT NOT NULL DEFAULT '{}',
+    result_json TEXT,
+    score INTEGER CHECK (score BETWEEN 0 AND 100),
+    started_at TEXT NOT NULL,
+    saved_at TEXT NOT NULL,
+    submitted_at TEXT
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_assessment_one_draft
+    ON assessment_attempts(user_id, learning_item_id, assessment_id)
+    WHERE status = 'in_progress';
+
+CREATE INDEX IF NOT EXISTS idx_assessment_history
+    ON assessment_attempts(user_id, learning_item_id, assessment_id, id DESC);
+
 CREATE INDEX IF NOT EXISTS idx_subscriptions_user_status
     ON subscriptions(user_id, status, end_date);
 

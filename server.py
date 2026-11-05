@@ -17,6 +17,7 @@ from pathlib import Path
 from urllib.parse import unquote, urlparse
 
 from quizzes import QUIZZES, public_quiz
+import assessments
 
 
 ROOT = Path(__file__).resolve().parent
@@ -385,6 +386,20 @@ class EduStreamHandler(BaseHTTPRequestHandler):
             self._json({"ok": True, **self._dashboard(user)})
             return
 
+        match = re.fullmatch(r"/api/assessments/(\d+)", path)
+        if match:
+            user = self._require_user({"learner"})
+            if user:
+                self._assessment_request(user, item_id=int(match.group(1)))
+            return
+
+        match = re.fullmatch(r"/api/assessment-attempts/(\d+)", path)
+        if match:
+            user = self._require_user({"learner"})
+            if user:
+                self._assessment_request(user, action="read", attempt_id=int(match.group(1)))
+            return
+
         match = re.fullmatch(r"/api/quiz/(\d+)", path)
         if match:
             user = self._require_user({"learner"})
@@ -455,6 +470,18 @@ class EduStreamHandler(BaseHTTPRequestHandler):
                 if user:
                     self._create_content(user, self._body())
                 return
+            match = re.fullmatch(r"/api/assessments/(\d+)/start", path)
+            if match:
+                user = self._require_user({"learner"})
+                if user:
+                    self._assessment_request(user, action="start", item_id=int(match.group(1)), body=self._body())
+                return
+            match = re.fullmatch(r"/api/assessment-attempts/(\d+)/(save|submit)", path)
+            if match:
+                user = self._require_user({"learner"})
+                if user:
+                    self._assessment_request(user, action=match.group(2), attempt_id=int(match.group(1)), body=self._body())
+                return
             match = re.fullmatch(r"/api/quiz/(\d+)/submit", path)
             if match:
                 user = self._require_user({"learner"})
@@ -521,7 +548,11 @@ class EduStreamHandler(BaseHTTPRequestHandler):
                 ]
                 for item in items:
                     item["has_quiz"] = item["id"] in QUIZZES
-                    item["quiz_question_count"] = len(QUIZZES[item["id"]]["questions"]) if item["has_quiz"] else 0
+                    item["quiz_question_count"] = sum(entry["question_count"] for entry in assessments.definitions(item["id"]))
+                    assessment_status = assessments.completion(connection, user["id"], item["id"])
+                    item["assessment_completed"] = assessment_status["completed"]
+                    item["assessments_passed"] = assessment_status["passed_count"]
+                    item["assessment_count"] = assessment_status["total_assessments"]
                 payments = [
                     dict(row)
                     for row in connection.execute(
@@ -540,7 +571,7 @@ class EduStreamHandler(BaseHTTPRequestHandler):
                     "payments": payments,
                     "stats": {
                         "available": len(entitled),
-                        "completed": sum(1 for item in entitled if item["progress_percent"] == 100),
+                        "completed": sum(1 for item in entitled if item["assessment_completed"]),
                         "average_progress": average_progress,
                         "locked": sum(1 for item in items if not item["entitled"]),
                     },
@@ -618,6 +649,33 @@ class EduStreamHandler(BaseHTTPRequestHandler):
                     "pending_content": len(pending_items),
                 },
             }
+
+    def _assessment_request(self, user: dict, action: str = "overview", item_id: int | None = None,
+                            attempt_id: int | None = None, body: dict | None = None) -> None:
+        try:
+            with connect_db() as connection:
+                if action in {"start", "save", "submit"}:
+                    # Serialize competing saves/submits and avoid duplicate draft attempts.
+                    connection.execute("BEGIN IMMEDIATE")
+                row = None
+                if attempt_id is not None:
+                    row = assessments.owned_attempt(connection, user["id"], attempt_id)
+                    item_id = row["learning_item_id"]
+                if not has_entitlement(connection, user["id"], item_id):
+                    raise assessments.AssessmentError("An active subscription that includes this course is required.", 403)
+                if action == "overview":
+                    payload = assessments.overview(connection, user["id"], item_id)
+                elif action == "start":
+                    payload = {"attempt": assessments.start(connection, user["id"], item_id, body)}
+                elif action == "save":
+                    payload = {"attempt": assessments.save(connection, row, body)}
+                elif action == "submit":
+                    payload = {"attempt": assessments.submit(connection, row, body)}
+                else:
+                    payload = {"attempt": assessments.public_attempt(connection, row)}
+            self._json({"ok": True, **payload})
+        except assessments.AssessmentError as error:
+            self._error(str(error), error.status)
 
     def _quiz_for_user(self, connection: sqlite3.Connection, user: dict, item_id: int) -> dict | None:
         quiz = QUIZZES.get(item_id)

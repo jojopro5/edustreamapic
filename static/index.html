@@ -121,18 +121,18 @@
     <p id="dialog-metadata" class="dialog-metadata"></p>
     <p id="dialog-description" class="muted"></p>
     <div class="verified-box"><div><strong>✓ Access verified</strong><p id="dialog-body"></p></div></div>
-    <label for="progress-slider">Update learning progress</label>
+    <p class="muted">Study progress records your learning activity. Course completion requires passing all module quizzes and the final assessment.</p><label for="progress-slider">Update study progress</label>
     <div class="progress-update">
       <input id="progress-slider" type="range" min="0" max="100" step="1" value="0">
       <output id="progress-output" for="progress-slider">0%</output>
     </div>
     <button id="save-progress" class="button primary full" type="button">Save progress</button>
-    <button id="dialog-start-quiz" class="button secondary full hidden" type="button">Take practice quiz</button>
+    <button id="dialog-start-quiz" class="button secondary full hidden" type="button">View assessments</button>
     <p id="dialog-error" class="inline-error" role="alert"></p>
   </dialog>
   <dialog id="quiz-dialog" class="quiz-dialog" aria-labelledby="quiz-title" aria-describedby="quiz-description">
     <header class="quiz-header">
-      <div><span class="quiz-eyebrow">COURSE KNOWLEDGE CHECK</span><h2 id="quiz-title">Practice quiz</h2><p id="quiz-description">Choose your answers, check your understanding, and try again whenever you need.</p></div>
+      <div><span class="quiz-eyebrow">COURSE ASSESSMENTS</span><h2 id="quiz-title">Course assessments</h2><p id="quiz-description">Pass the module quizzes, unlock your final assessment, and track your best results.</p></div>
       <button id="quiz-close" class="quiz-close" type="button" aria-label="Close quiz">×</button>
     </header>
     <div id="quiz-content"></div>
