@@ -35,6 +35,7 @@ These credentials are for a local prototype only.
 - Course guides explaining why a topic matters, its learning goals, and practical examples
 - Twelve credited YouTube video recommendations with thumbnails, with four resources per curated topic
 - Learner progress tracking
+- A five-question Digital Safety practice quiz with clickable answers, saved scores, feedback, and retakes
 - Educator content submission workflow
 - Administrator content approval and rejection
 - Payment records and audit events
@@ -47,6 +48,7 @@ These credentials are for a local prototype only.
 ```text
 EduStream/
   database/schema.sql     SQLite schema for Nimarta's database work
+  quizzes.py              Practice questions and server-side answer keys
   static/                 Website interface and brand assets
   tests/test_api.py       End-to-end API tests
   server.py               Python web server and protected API
@@ -62,3 +64,13 @@ Learners can select **Why learn this topic?** on a course card to read its guide
 Edit `static/course-guides.js` to maintain the topic introductions and verified video URLs. A resource outside the curated topics uses its own description and a clearly labelled YouTube topic search instead of assigning an unrelated video.
 
 Each curated guide has one featured video and three related videos covering digital safety, SQL/database design, or web development/security. The page displays the actual resource count and credits the original creators. Thumbnail files are stored in `static/thumbnails/` so their previews can be served locally.
+
+## Practice quiz
+
+Digital Safety Foundations includes a five-question practice quiz. Learners can open it from the dashboard, course card, course guide, or protected learning dialog. Entire answer rows are clickable, keyboard controls work, and students can change answers or retake the quiz after receiving feedback. Scores are graded on the server and saved to the signed-in learner's own account. A quiz result does not automatically change course progress.
+
+SQL Essentials and Secure Web Application Design currently provide course guides, videos, and progress tracking but do not yet include interactive quizzes. The Digital Safety quiz requires an active subscription that includes the course.
+
+After pulling a code update, restart the server so new API routes and database tables are loaded. Existing data is preserved because schema additions run automatically at startup; do not use `--reset` for a normal update.
+
+Question references: [CISA password guidance](https://www.cisa.gov/sites/default/files/2024-09/Secure-Our-World-Passwords-Tip-Sheet.pdf), [NIST phishing guidance](https://www.nist.gov/itl/smallbusinesscyber/guidance-topic/phishing), and [Login.gov account authentication](https://www.login.gov/help/manage-your-account/add-or-change-your-authentication-method/). Privacy and role-access examples follow this project's acceptance checks.

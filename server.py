@@ -16,6 +16,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
+from quizzes import QUIZZES, public_quiz
+
 
 ROOT = Path(__file__).resolve().parent
 STATIC_ROOT = ROOT / "static"
@@ -360,6 +362,13 @@ class EduStreamHandler(BaseHTTPRequestHandler):
             self._json({"ok": True, **self._dashboard(user)})
             return
 
+        match = re.fullmatch(r"/api/quiz/(\d+)", path)
+        if match:
+            user = self._require_user({"learner"})
+            if user:
+                self._get_quiz(user, int(match.group(1)))
+            return
+
         match = re.fullmatch(r"/api/access/(\d+)", path)
         if match:
             user = self._require_user({"learner"})
@@ -423,6 +432,12 @@ class EduStreamHandler(BaseHTTPRequestHandler):
                 if user:
                     self._create_content(user, self._body())
                 return
+            match = re.fullmatch(r"/api/quiz/(\d+)/submit", path)
+            if match:
+                user = self._require_user({"learner"})
+                if user:
+                    self._submit_quiz(user, int(match.group(1)), self._body())
+                return
             match = re.fullmatch(r"/api/admin/content/(\d+)/review", path)
             if match:
                 user = self._require_user({"admin"})
@@ -480,6 +495,9 @@ class EduStreamHandler(BaseHTTPRequestHandler):
                         (plan_id, user["id"]),
                     )
                 ]
+                for item in items:
+                    item["has_quiz"] = item["id"] in QUIZZES
+                    item["quiz_question_count"] = len(QUIZZES[item["id"]]["questions"]) if item["has_quiz"] else 0
                 payments = [
                     dict(row)
                     for row in connection.execute(
@@ -576,6 +594,87 @@ class EduStreamHandler(BaseHTTPRequestHandler):
                     "pending_content": len(pending_items),
                 },
             }
+
+    def _quiz_for_user(self, connection: sqlite3.Connection, user: dict, item_id: int) -> dict | None:
+        quiz = QUIZZES.get(item_id)
+        if not quiz:
+            self._error("There is no practice quiz for this learning item.", HTTPStatus.NOT_FOUND)
+            return None
+        if not has_entitlement(connection, user["id"], item_id):
+            record_audit(connection, user["id"], "quiz_access_denied", f"Learning item {item_id}")
+            connection.commit()
+            self._error("An active subscription that includes this course is required for its quiz.", HTTPStatus.FORBIDDEN)
+            return None
+        return quiz
+
+    def _get_quiz(self, user: dict, item_id: int) -> None:
+        with connect_db() as connection:
+            quiz = self._quiz_for_user(connection, user, item_id)
+            if not quiz:
+                return
+            last_attempt = connection.execute(
+                """
+                SELECT id AS attempt_id, score, correct_count AS correct, total_questions, created_at
+                FROM quiz_attempts WHERE user_id = ? AND learning_item_id = ?
+                ORDER BY id DESC LIMIT 1
+                """,
+                (user["id"], item_id),
+            ).fetchone()
+        self._json({"ok": True, "quiz": public_quiz(quiz), "last_attempt": row_dict(last_attempt)})
+
+    def _submit_quiz(self, user: dict, item_id: int, body: dict) -> None:
+        with connect_db() as connection:
+            quiz = self._quiz_for_user(connection, user, item_id)
+            if not quiz:
+                return
+            answers = body.get("answers") if isinstance(body, dict) else None
+            question_ids = {question["id"] for question in quiz["questions"]}
+            if not isinstance(answers, dict) or set(answers) != question_ids:
+                raise ValueError("Please answer every question before submitting the quiz.")
+            feedback = []
+            for question in quiz["questions"]:
+                selected = answers[question["id"]]
+                allowed = {option["id"] for option in question["options"]}
+                if not isinstance(selected, str) or selected not in allowed:
+                    raise ValueError("Each answer must be one of the options shown in the quiz.")
+                feedback.append(
+                    {
+                        "question_id": question["id"],
+                        "correct": selected == question["correct_option_id"],
+                        "selected_option_id": selected,
+                        "correct_option_id": question["correct_option_id"],
+                        "explanation": question["explanation"],
+                    }
+                )
+            correct = sum(item["correct"] for item in feedback)
+            total = len(feedback)
+            score = round(correct * 100 / total)
+            created_at = iso_now()
+            cursor = connection.execute(
+                """
+                INSERT INTO quiz_attempts
+                    (user_id, learning_item_id, score, correct_count, total_questions, answers_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (user["id"], item_id, score, correct, total, json.dumps(answers), created_at),
+            )
+            attempt_id = cursor.lastrowid
+            record_audit(connection, user["id"], "quiz_submitted", f"Learning item {item_id}: {correct}/{total} ({score}%)")
+            connection.commit()
+        self._json(
+            {
+                "ok": True,
+                "result": {
+                    "attempt_id": attempt_id,
+                    "score": score,
+                    "correct": correct,
+                    "total_questions": total,
+                    "passed": score >= quiz["pass_percent"],
+                    "feedback": feedback,
+                    "created_at": created_at,
+                },
+            }
+        )
 
     def _update_progress(self, user: dict, body: dict) -> None:
         try:

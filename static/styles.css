@@ -371,6 +371,13 @@ textarea { min-height: 140px; line-height: 1.65; resize: vertical; }
 .subject-access h2 { font-size: 1.0625rem; }
 .subject-access p { font-size: .875rem; }
 .subject-access .button { margin-top: 20px; }
+.course-quiz-callout { background: #f0f6ff; border-color: #cfdef6; }
+.course-quiz-callout .button { margin-top: 18px; }
+.quiz-course-note { display: block; margin-top: 12px; color: #6b7f9b; font-size: .8125rem; line-height: 1.7; }
+.course-quiz-link { justify-content: flex-start; width: 100%; min-height: 38px; padding: 4px 0; }
+.spotlight .spotlight-quiz-button { margin-left: 10px; color: white; border-color: #bdd4ff70; background: #ffffff12; }
+.spotlight .spotlight-quiz-button:hover { color: white; background: #ffffff25; }
+#dialog-start-quiz { margin-top: 12px; }
 .video-card-label { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; margin-bottom: 7px; }
 .video-card-label .eyebrow { color: #7186a3; font-size: .625rem; }
 .video-card-label .badge { font-size: .6875rem; }

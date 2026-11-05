@@ -83,6 +83,22 @@ CREATE TABLE IF NOT EXISTS audit_events (
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
 );
 
+CREATE TABLE IF NOT EXISTS quiz_attempts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    learning_item_id INTEGER NOT NULL,
+    score INTEGER NOT NULL CHECK (score BETWEEN 0 AND 100),
+    correct_count INTEGER NOT NULL CHECK (correct_count >= 0),
+    total_questions INTEGER NOT NULL CHECK (total_questions > 0),
+    answers_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (learning_item_id) REFERENCES learning_items(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_quiz_attempts_user_item
+    ON quiz_attempts(user_id, learning_item_id, id DESC);
+
 CREATE INDEX IF NOT EXISTS idx_subscriptions_user_status
     ON subscriptions(user_id, status, end_date);
 
