@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="EduStream secure learning platform prototype">
+  <title>EduStream | Your learning space</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/login.css">
+</head>
+<body>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <main id="login-screen" class="login-screen">
+    <section class="login-visual" aria-labelledby="welcome-title">
+      <a class="brand login-brand" href="#" aria-label="EduStream home">
+        <img src="/logo.svg" alt="" width="190" height="48">
+      </a>
+      <div class="login-copy">
+        <span class="login-tag"><span aria-hidden="true"></span> LEARNING, WITH CONFIDENCE</span>
+        <h1 id="welcome-title">Keep your learning<br>moving forward.</h1>
+        <p>Discover approved learning resources, pick up where you left off, and see your progress in one place.</p>
+        <div class="learning-preview" aria-label="A preview of the learner workspace">
+          <div class="preview-top"><span><i aria-hidden="true"></i> YOUR LEARNING SPACE</span><span class="preview-label">Preview</span></div>
+          <div class="preview-course">
+            <div class="preview-art" aria-hidden="true">
+              <svg viewBox="0 0 100 100" fill="none"><path d="M50 22 77 33v22c0 16-12 27-27 34-15-7-27-18-27-34V33L50 22Z" stroke="currentColor" stroke-width="3"/><path d="m38 53 9 9 17-19" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/><path d="M13 23h10M77 15h10M11 73h8M83 78h8" stroke="currentColor" stroke-width="2" stroke-linecap="round" opacity=".35"/></svg>
+            </div>
+            <div class="preview-course-copy"><span class="preview-category">SECURITY &amp; DIGITAL SKILLS</span><h3>Digital Safety<br>Foundations</h3><span class="preview-approved"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 8 3 3 5-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg> Approved learning content</span></div>
+            <div class="preview-arrow" aria-hidden="true">↗</div>
+          </div>
+          <div class="preview-bottom"><span><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5 9V6a5 5 0 0 1 10 0v3M4 9h12v9H4z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg> Access matched to your plan</span><span>Your progress, saved <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 8 3 3 5-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div>
+        </div>
+        <div class="trust-row">
+          <div><span class="trust-number">01</span><strong>Explore</strong><span>Find your next resource</span></div>
+          <div><span class="trust-number">02</span><strong>Learn</strong><span>Open content in your plan</span></div>
+          <div><span class="trust-number">03</span><strong>Grow</strong><span>Keep track of your progress</span></div>
+        </div>
+      </div>
+      <p class="project-credit">BIS3006 · Christian Joshua Nathanael Tombokan · 202500046<br>Website and branding with SQL support from Nimarta</p>
+    </section>
+
+    <section class="login-panel" aria-label="Sign in">
+      <div class="login-card">
+        <div class="mobile-brand"><img src="/logo.svg" alt="EduStream" width="176" height="44"></div>
+        <span class="eyebrow">YOUR LEARNING WORKSPACE</span>
+        <h2>Welcome back.</h2>
+        <p class="muted">Sign in to pick up where you left off.</p>
+        <form id="login-form">
+          <label for="email">Email address</label>
+          <input id="email" name="email" type="email" autocomplete="username" placeholder="name@example.com" required>
+          <label for="password">Password</label>
+          <div class="password-wrap">
+            <input id="password" name="password" type="password" autocomplete="current-password" placeholder="Enter your password" required>
+            <button id="toggle-password" type="button" class="text-button" aria-label="Show password">Show</button>
+          </div>
+          <button class="button primary full" type="submit"><span>Sign in to your workspace</span></button>
+        </form>
+        <div class="divider"><span>Explore the prototype</span></div>
+        <p class="role-help">Choose a role to try its workspace.</p>
+        <div class="demo-grid" aria-label="Try a demo workspace">
+          <button type="button" class="demo-account" data-email="learner@edustream.local" data-password="Learn123!">
+            <span class="demo-icon blue" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m3 9 9-5 9 5-9 5-9-5Zm4 3v5c3 2 7 2 10 0v-5M21 9v7"/></svg></span><span><strong>Learner</strong><small>Browse &amp; learn</small></span>
+          </button>
+          <button type="button" class="demo-account" data-email="educator@edustream.local" data-password="Teach123!">
+            <span class="demo-icon aqua" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 6c-3-2-7-2-10 0v14c3-2 7-2 10 0 3-2 7-2 10 0V6c-3-2-7-2-10 0Zm0 0v14M5 10h3M16 10h3"/></svg></span><span><strong>Educator</strong><small>Create content</small></span>
+          </button>
+          <button type="button" class="demo-account" data-email="admin@edustream.local" data-password="Admin123!">
+            <span class="demo-icon navy" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m12 3 8 3v6c0 5-4 8-8 10-4-2-8-5-8-10V6l8-3Zm-4 9 3 3 5-6"/></svg></span><span><strong>Admin</strong><small>Review &amp; audit</small></span>
+          </button>
+        </div>
+        <p class="security-note"><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="7.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M10 9v5M10 6v1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg> This prototype uses demo accounts and simulated subscriptions.</p>
+      </div>
+    </section>
+  </main>
+
+  <div id="app-shell" class="app-shell hidden">
+    <aside class="sidebar" id="sidebar">
+      <a class="brand sidebar-brand" href="#overview" data-view="overview" aria-label="EduStream dashboard">
+        <img src="/logo.svg" alt="EduStream" width="174" height="44">
+      </a>
+      <div class="workspace-label" id="workspace-label">WORKSPACE</div>
+      <nav id="main-nav" class="main-nav" aria-label="Main navigation"></nav>
+      <div class="sidebar-card" id="sidebar-support">
+        <span class="sidebar-card-icon" aria-hidden="true">✓</span>
+        <strong>Security protected</strong>
+        <p>Your access is checked before protected content is opened.</p>
+      </div>
+      <button id="logout-button" type="button" class="logout-button"><span aria-hidden="true">↪</span> Sign out</button>
+    </aside>
+
+    <div class="app-main" id="app-main">
+      <header class="topbar">
+        <button id="menu-button" class="icon-button menu-button" type="button" aria-label="Open menu" aria-expanded="false" aria-controls="sidebar">☰</button>
+        <div class="topbar-title">
+          <span id="page-kicker">EDUSTREAM</span>
+          <span class="breadcrumb-divider" aria-hidden="true">/</span>
+          <strong id="page-title">Overview</strong>
+        </div>
+        <div class="topbar-actions">
+          <span class="workspace-badge">BIS3006 demo workspace</span>
+          <div class="user-summary">
+            <span id="user-avatar" class="avatar">C</span>
+            <span><strong id="user-name">User</strong><small id="user-role">Role</small></span>
+          </div>
+        </div>
+      </header>
+      <main id="app-content" class="content" tabindex="-1"></main>
+    </div>
+  </div>
+
+  <dialog id="lesson-dialog" class="lesson-dialog" aria-labelledby="dialog-title" aria-describedby="dialog-description">
+    <div class="dialog-top">
+      <span class="demo-icon blue" aria-hidden="true">▶</span>
+      <button id="close-dialog" type="button" class="icon-button" aria-label="Close lesson">×</button>
+    </div>
+    <span class="eyebrow">PROTECTED CONTENT</span>
+    <h2 id="dialog-title">Lesson</h2>
+    <p id="dialog-metadata" class="dialog-metadata"></p>
+    <p id="dialog-description" class="muted"></p>
+    <div class="verified-box"><div><strong>✓ Access verified</strong><p id="dialog-body"></p></div></div>
+    <label for="progress-slider">Update learning progress</label>
+    <div class="progress-update">
+      <input id="progress-slider" type="range" min="0" max="100" step="1" value="0">
+      <output id="progress-output" for="progress-slider">0%</output>
+    </div>
+    <button id="save-progress" class="button primary full" type="button">Save progress</button>
+    <p id="dialog-error" class="inline-error" role="alert"></p>
+  </dialog>
+  <div id="mobile-overlay" class="mobile-overlay"></div>
+  <script src="/course-guides.js" defer></script>
+  <script src="/app.js" defer></script>
+</body>
+</html>

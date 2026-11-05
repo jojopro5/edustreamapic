@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+data/
+.env
+.env.*
+!.env.example
+*.db-wal
+*.db-shm
+*.db-journal
+.sites-runtime/
