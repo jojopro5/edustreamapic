@@ -9,6 +9,7 @@
   <link rel="stylesheet" href="/styles.css">
   <link rel="stylesheet" href="/login.css">
   <link rel="stylesheet" href="/quiz.css">
+  <link rel="stylesheet" href="/feedback.css">
 </head>
 <body>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
@@ -129,6 +130,17 @@
     <button id="save-progress" class="button primary full" type="button">Save progress</button>
     <button id="dialog-start-quiz" class="button secondary full hidden" type="button">View assessments</button>
     <p id="dialog-error" class="inline-error" role="alert"></p>
+    <section class="feedback-section" aria-labelledby="feedback-heading">
+      <h3 id="feedback-heading">Learner feedback</h3>
+      <p class="muted feedback-note">Share what helped or what was unclear. Other learners see your first name and initial. Please keep personal details out of comments.</p>
+      <form id="feedback-form" class="feedback-form" novalidate>
+        <label for="feedback-body" class="sr-only">Your feedback</label>
+        <textarea id="feedback-body" name="body" maxlength="500" rows="3" placeholder="What did you think of this course?" aria-describedby="feedback-count"></textarea>
+        <div class="feedback-actions"><span id="feedback-count" class="helper" aria-live="polite">0 / 500</span><button class="button secondary small" type="submit">Post feedback</button></div>
+        <p id="feedback-error" class="inline-error" role="alert"></p>
+      </form>
+      <ul id="feedback-list" class="feedback-list" aria-live="polite"></ul>
+    </section>
   </dialog>
   <dialog id="quiz-dialog" class="quiz-dialog" aria-labelledby="quiz-title" aria-describedby="quiz-description">
     <header class="quiz-header">
@@ -140,6 +152,7 @@
   <div id="mobile-overlay" class="mobile-overlay"></div>
   <script src="/course-guides.js" defer></script>
   <script src="/quiz.js" defer></script>
+  <script src="/feedback.js" defer></script>
   <script src="/app.js" defer></script>
 </body>
 </html>

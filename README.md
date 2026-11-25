@@ -37,6 +37,7 @@ These credentials are for a local prototype only.
 - Learner progress tracking
 - Three module quizzes and a final assessment per course, with server-saved drafts, best grades, attempt history, feedback, and different question sets on retakes
 - A curated learner catalogue limited to these three English courses; other resources stay hidden from students
+- Learner feedback on each course, with administrator moderation
 - Educator content submission workflow
 - Administrator content approval and rejection
 - Payment records and audit events
@@ -59,6 +60,18 @@ EduStream/
 ```
 
 The SQLite schema is intentionally separated from the application so the database can later be reviewed or migrated to MySQL without redesigning the website interface.
+
+## Learner feedback
+
+Learners can leave feedback in the lesson window of any course their plan includes. Other learners see the comment with the author's first name and initial only.
+
+- Comments are stored as plain text and always displayed as text, so typed markup such as `<script>` shows literally and never runs. Text is kept rather than stripped because the Secure Web course invites learners to discuss code.
+- Comments must be 2 to 500 characters. Control and invisible formatting characters are removed. Each learner can post up to 5 comments every 10 minutes.
+- A learner can edit or delete only their own comments. Requests for another learner's comment return 404.
+- Administrators can hide or restore any comment under **Learner feedback**. Hidden comments disappear for learners, stay in the moderation list with who hid them and when, and can no longer be edited or deleted by their author.
+- Posting, editing, deleting, moderation, denied access and rate limiting are audit events. Events record ids only, never the comment text.
+
+Tests are in `tests/test_feedback.py`, named `T3_FB_01` to `T3_FB_09` for the test register.
 
 ## Course guides and external resources
 
