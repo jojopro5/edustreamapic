@@ -28,6 +28,10 @@ def now() -> str:
     return datetime.now(UTC).isoformat(timespec="milliseconds")
 
 
+def has_assessments(item_id: int) -> bool:
+    return item_id in COURSE_ASSESSMENTS
+
+
 def definitions(item_id: int) -> list[dict]:
     course = COURSE_ASSESSMENTS.get(item_id)
     if not course:

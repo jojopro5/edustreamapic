@@ -29,7 +29,6 @@ SCHEMA_PATH = ROOT / "database" / "schema.sql"
 SESSION_COOKIE = "edustream_session"
 SESSION_TTL = timedelta(hours=8)
 SESSIONS: dict[str, dict] = {}
-LEARNER_COURSE_IDS = frozenset({1, 2, 3})
 
 
 class ClosingConnection(sqlite3.Connection):
@@ -226,14 +225,19 @@ def active_subscription(connection: sqlite3.Connection, user_id: int) -> sqlite3
 
 
 def learner_visible(item: dict | sqlite3.Row) -> bool:
-    """Publish only approved, non-Indonesian resources with a usable quiz."""
-    quiz = QUIZZES.get(item["id"])
-    return (
-        item["id"] in LEARNER_COURSE_IDS
-        and item["status"] == "approved"
-        and item["language"] != "id"
-        and bool(quiz and quiz.get("questions"))
-    )
+    """Show learners every approved, non-Indonesian resource.
+
+    Visibility comes from the database (review status and language), so newly
+    approved items appear without a code change. Whether a learner can open an
+    item is still decided by their plan in has_entitlement().
+    """
+    return item["status"] == "approved" and item["language"] != "id"
+
+
+def has_course_assessments(item_id: int) -> bool:
+    """True when the item has a practice quiz and module assessment banks."""
+    quiz = QUIZZES.get(item_id)
+    return bool(quiz and quiz.get("questions")) and assessments.has_assessments(item_id)
 
 
 def has_entitlement(connection: sqlite3.Connection, user_id: int, item_id: int) -> bool:
@@ -547,9 +551,18 @@ class EduStreamHandler(BaseHTTPRequestHandler):
                     if learner_visible(row)
                 ]
                 for item in items:
-                    item["has_quiz"] = item["id"] in QUIZZES
-                    item["quiz_question_count"] = sum(entry["question_count"] for entry in assessments.definitions(item["id"]))
-                    assessment_status = assessments.completion(connection, user["id"], item["id"])
+                    item["has_quiz"] = has_course_assessments(item["id"])
+                    if item["has_quiz"]:
+                        item["quiz_question_count"] = sum(entry["question_count"] for entry in assessments.definitions(item["id"]))
+                        assessment_status = assessments.completion(connection, user["id"], item["id"])
+                    else:
+                        # No assessment bank yet: finishing the material completes the item.
+                        item["quiz_question_count"] = 0
+                        assessment_status = {
+                            "completed": item["progress_percent"] == 100,
+                            "passed_count": 0,
+                            "total_assessments": 0,
+                        }
                     item["assessment_completed"] = assessment_status["completed"]
                     item["assessments_passed"] = assessment_status["passed_count"]
                     item["assessment_count"] = assessment_status["total_assessments"]

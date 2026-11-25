@@ -82,9 +82,11 @@ The module-and-assessment flow is inspired by [Coursera's assignment guidance](h
 
 Each quiz requires an active subscription that includes its course. Starter includes Digital Safety and SQL Essentials; Secure Web requires Plus or Team.
 
-Only these three selected courses (IDs 1–3) are eligible for the learner catalogue. They must be approved, have a nonempty quiz, and be marked English. All other resources, including Indonesian content, stay hidden from learners even after approval. The same restriction applies to direct content access, progress updates, and quiz requests. Existing records and educator/admin review access are preserved. Learner statistics count only visible courses.
+The learner catalogue is driven by the database: every learning item with `status = 'approved'` and a non-Indonesian `language` is listed for learners. Pending, rejected and Indonesian (`id`) items stay hidden. Listing an item does not grant access: opening it, updating progress and taking its quizzes all still require an active subscription whose plan has a `plan_entitlements` row for that item. When an admin approves an item it is added to the Plus and Team plans, so Starter learners see it as locked. Existing records and educator/admin review access are preserved. Learner statistics count only visible items.
 
-The content form records English (`en`) or Bahasa Indonesia (`id`). Language is educator-supplied metadata, not automatic language detection. Existing curated English records receive `en` during the automatic schema migration. To expand the learner catalogue later, review `LEARNER_COURSE_IDS` in `server.py`, its eligibility checks, and the matching module banks in `assessment_content.py`.
+Items only show assessment links when they have both a practice quiz in `quizzes.py` and module banks in `assessment_content.py`. A visible item without them can still be opened and tracked; reaching 100% progress marks it complete.
+
+The content form records English (`en`) or Bahasa Indonesia (`id`). Language is educator-supplied metadata, not automatic language detection. Existing curated English records receive `en` during the automatic schema migration.
 
 Previous five-question practice results remain in `quiz_attempts` and their legacy API is retained for compatibility. They do not count as module passes. New drafts and grades are stored in `assessment_attempts`; existing learning and account records are preserved during startup migration.
 
