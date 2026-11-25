@@ -16,6 +16,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
+import uploads
+
 from quizzes import QUIZZES, public_quiz
 import assessments
 
@@ -407,6 +409,13 @@ class EduStreamHandler(BaseHTTPRequestHandler):
                 self._get_quiz(user, int(match.group(1)))
             return
 
+        match = re.fullmatch(r"/api/content/(\d+)/attachment", path)
+        if match:
+            user = self._require_user()
+            if user:
+                self._download_attachment(user, int(match.group(1)))
+            return
+
         match = re.fullmatch(r"/api/access/(\d+)", path)
         if match:
             user = self._require_user({"learner"})
@@ -425,10 +434,11 @@ class EduStreamHandler(BaseHTTPRequestHandler):
                     return
                 record_audit(connection, user["id"], "content_accessed", f"Learning item {item_id}")
                 connection.commit()
+                attachment = uploads.public_info(uploads.file_record(connection, item_id))
             self._json(
                 {
                     "ok": True,
-                    "item": dict(item),
+                    "item": {**dict(item), "attachment": attachment},
                     "lesson": {
                         "heading": "Lesson available",
                         "body": "Your entitlement was verified successfully. This prototype can now deliver the protected learning material.",
@@ -464,6 +474,12 @@ class EduStreamHandler(BaseHTTPRequestHandler):
                 user = self._require_user({"learner"})
                 if user:
                     self._change_subscription(user, self._body())
+                return
+            match = re.fullmatch(r"/api/content/(\d+)/attachment", path)
+            if match:
+                user = self._require_user({"educator", "admin"})
+                if user:
+                    self._upload_attachment(user, int(match.group(1)))
                 return
             if path == "/api/content":
                 user = self._require_user({"educator", "admin"})
@@ -588,6 +604,8 @@ class EduStreamHandler(BaseHTTPRequestHandler):
                         (user["id"],),
                     )
                 ]
+                for item in items:
+                    item["attachment"] = uploads.public_info(uploads.file_record(connection, item["id"]))
                 return {
                     "role": "educator",
                     "user": user,
@@ -613,6 +631,8 @@ class EduStreamHandler(BaseHTTPRequestHandler):
                     """
                 )
             ]
+            for item in pending_items:
+                item["attachment"] = uploads.public_info(uploads.file_record(connection, item["id"]))
             audit = [
                 dict(row)
                 for row in connection.execute(
@@ -757,6 +777,85 @@ class EduStreamHandler(BaseHTTPRequestHandler):
                 },
             }
         )
+
+    def _upload_root(self) -> Path:
+        return DB_PATH.parent / "uploads"
+
+    def _upload_attachment(self, user: dict, item_id: int) -> None:
+        """Receive a raw file body; the display name comes from the X-File-Name header."""
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            length = -1
+        raw_name = unquote(self.headers.get("X-File-Name", ""))
+        with connect_db() as connection:
+            item = connection.execute(
+                "SELECT id, title, status, created_by FROM learning_items WHERE id = ?", (item_id,)
+            ).fetchone()
+            if not item:
+                self._error("Learning item was not found.", HTTPStatus.NOT_FOUND)
+                return
+            try:
+                if length < 0:
+                    raise uploads.UploadError("Invalid request length.", reason="bad_length")
+                if length > uploads.MAX_BYTES:
+                    # Refuse before reading so an oversized body is never held in memory.
+                    self.close_connection = True
+                    raise uploads.UploadError("Files must be 5 MB or smaller.", 413, "too_large")
+                data = self.rfile.read(length) if length else b""
+                info = uploads.store(connection, self._upload_root(), item, user, raw_name, data)
+            except uploads.UploadError as error:
+                record_audit(connection, user["id"], "content_file_rejected", f"Learning item {item_id}: {error.reason}")
+                connection.commit()
+                self._error(str(error), error.status)
+                return
+            record_audit(
+                connection, user["id"], "content_file_uploaded",
+                f"Learning item {item_id}: {info['type']}, {info['size_bytes']} bytes, sha256 {info['sha256'][:16]}"
+                + (" (replaced)" if info["replaced"] else ""),
+            )
+            connection.commit()
+        self._json({"ok": True, "message": "File attached.", "attachment": info})
+
+    def _download_attachment(self, user: dict, item_id: int) -> None:
+        with connect_db() as connection:
+            item = connection.execute(
+                "SELECT id, status, language, created_by FROM learning_items WHERE id = ?", (item_id,)
+            ).fetchone()
+            if user["role"] == "learner":
+                allowed = bool(item) and has_entitlement(connection, user["id"], item_id)
+            elif user["role"] == "educator":
+                allowed = bool(item) and item["created_by"] == user["id"]
+            else:
+                allowed = bool(item)
+            record = uploads.file_record(connection, item_id) if allowed else None
+            if not allowed:
+                record_audit(connection, user["id"], "content_file_denied", f"Learning item {item_id}")
+                connection.commit()
+                self._error("This file is unavailable or not included in your active subscription.", HTTPStatus.FORBIDDEN)
+                return
+            if not record:
+                self._error("This learning item has no attached file.", HTTPStatus.NOT_FOUND)
+                return
+            path = self._upload_root() / record["stored_name"]
+            if not path.is_file():
+                self._error("The attached file is missing from storage.", HTTPStatus.NOT_FOUND)
+                return
+            data = path.read_bytes()
+            if hashlib.sha256(data).hexdigest() != record["sha256"]:
+                record_audit(connection, user["id"], "content_file_integrity_failed", f"Learning item {item_id}")
+                connection.commit()
+                self._error("The attached file failed its integrity check.", HTTPStatus.INTERNAL_SERVER_ERROR)
+                return
+            record_audit(connection, user["id"], "content_file_downloaded", f"Learning item {item_id}")
+            connection.commit()
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Referrer-Policy", "no-referrer")
+        for name, value in uploads.download_headers(record).items():
+            self.send_header(name, value)
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
 
     def _update_progress(self, user: dict, body: dict) -> None:
         try:

@@ -39,6 +39,7 @@ These credentials are for a local prototype only.
 - A curated learner catalogue limited to these three English courses; other resources stay hidden from students
 - Educator content submission workflow
 - Administrator content approval and rejection
+- Validated educator course file attachments (PDF, PNG or text), frozen once reviewed
 - Payment records and audit events
 - Responsive desktop and mobile interface
 - Accessible mobile navigation, focus handling, and progress controls
@@ -67,6 +68,19 @@ Learners can select **Why learn this topic?** on a course card to read its guide
 Edit `static/course-guides.js` to maintain the topic introductions and verified video URLs. A resource outside the curated topics uses its own description and a clearly labelled YouTube topic search instead of assigning an unrelated video.
 
 Each curated guide has one featured video and three related videos covering digital safety, SQL/database design, or web development/security. The page displays the actual resource count and credits the original creators. Thumbnail files are stored in `static/thumbnails/` so their previews can be served locally.
+
+## Educator course files
+
+Educators can attach one course file to a learning item in Content Studio. Use your own or synthetic material only.
+
+- Allowed types are PDF, PNG and plain UTF-8 text, up to 5 MB. The extension must match the file's actual content, so an HTML page or program renamed to `.pdf` is rejected, and `.txt` files containing HTML or script markup are rejected.
+- Files are stored in `data/uploads/` under a random name chosen by the server. The uploaded name is cleaned and kept only for display, so it can never choose a folder or overwrite another file.
+- A file can be attached or replaced only by the item's educator (or an administrator) and only while the item is pending. Once the item is approved or rejected the file is frozen, so learners download exactly what the administrator reviewed.
+- Administrators can download the file from the approval queue. Learners can download it only when the item is approved, visible and included in their plan.
+- Downloads are always sent as attachments with a fixed content type, `nosniff` and a sandbox content security policy. Each file's SHA-256 hash is stored and checked on every download.
+- Accepted, rejected (with the reason), denied, downloaded and tampered files are audit events.
+
+Tests are in `tests/test_uploads.py`, named `T2_UP_01` to `T2_UP_08` for the test register. Back up `data/uploads/` together with `data/edustream.db`.
 
 ## Module quizzes and final assessments
 

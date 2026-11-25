@@ -290,7 +290,7 @@ function educatorContent() {
 }
 function contentTable(items) {
   if (!items.length) return emptyState("Your first resource starts here", "Create a learning item in Content Studio to get started.", "layers");
-  return '<div class="table-wrap"><table class="data-table"><thead><tr><th scope="col">Resource</th><th scope="col">Format</th><th scope="col">Duration</th><th scope="col">Language</th><th scope="col">Status</th><th scope="col">Created</th></tr></thead><tbody>' + items.map(item => '<tr><td><div class="resource-cell"><span class="resource-icon theme-' + courseTheme(item).colour + '">' + icon(courseTheme(item).icon) + '</span><span><strong>' + escapeHtml(item.title) + '</strong><span class="muted">' + escapeHtml(item.category) + '</span></span></div></td><td>' + titleCase(item.content_type) + '</td><td>' + item.duration_minutes + ' min</td><td>' + (item.language === 'id' ? 'Bahasa Indonesia' : 'English') + '</td><td>' + statusBadge(item.status) + '</td><td>' + formatDate(item.created_at) + '</td></tr>').join("") + '</tbody></table></div>';
+  return '<div class="table-wrap"><table class="data-table"><thead><tr><th scope="col">Resource</th><th scope="col">Format</th><th scope="col">Duration</th><th scope="col">Language</th><th scope="col">Status</th><th scope="col">Created</th></tr></thead><tbody>' + items.map(item => '<tr><td><div class="resource-cell"><span class="resource-icon theme-' + courseTheme(item).colour + '">' + icon(courseTheme(item).icon) + '</span><span><strong>' + escapeHtml(item.title) + '</strong><span class="muted">' + escapeHtml(item.category) + '</span>' + attachmentLink(item) + '</span></div></td><td>' + titleCase(item.content_type) + '</td><td>' + item.duration_minutes + ' min</td><td>' + (item.language === 'id' ? 'Bahasa Indonesia' : 'English') + '</td><td>' + statusBadge(item.status) + '</td><td>' + formatDate(item.created_at) + '</td></tr>').join("") + '</tbody></table></div>';
 }
 function adminOverview() {
   setPage("Overview", "Administrator workspace");
@@ -305,7 +305,7 @@ function adminApprovals() {
 }
 function approvalList(items) {
   if (!items.length) return emptyState("You're all caught up", "New educator submissions will appear here for your review.", "shield");
-  return '<div class="approval-list">' + items.map(item => '<article class="approval-card"><span class="resource-icon theme-' + courseTheme(item).colour + '">' + icon(courseTheme(item).icon) + '</span><div class="approval-details"><span class="eyebrow">' + escapeHtml(item.category) + '</span><h3>' + escapeHtml(item.title) + '</h3><p>' + escapeHtml(item.description) + '</p><div class="approval-meta"><span>' + icon("users") + escapeHtml(item.educator_name) + '</span><span>' + icon("clock") + item.duration_minutes + ' min · ' + titleCase(item.content_type) + '</span><span>' + (item.language === 'id' ? 'Bahasa Indonesia' : 'English') + '</span><span>Submitted ' + formatDate(item.created_at) + '</span></div></div><div class="approval-actions"><button class="button secondary small" data-review-id="' + item.id + '" data-decision="approved">' + icon("check") + 'Approve</button><button class="button danger small" data-review-id="' + item.id + '" data-decision="rejected">' + icon("close") + 'Reject</button></div></article>').join("") + '</div>';
+  return '<div class="approval-list">' + items.map(item => '<article class="approval-card"><span class="resource-icon theme-' + courseTheme(item).colour + '">' + icon(courseTheme(item).icon) + '</span><div class="approval-details"><span class="eyebrow">' + escapeHtml(item.category) + '</span><h3>' + escapeHtml(item.title) + '</h3><p>' + escapeHtml(item.description) + '</p><div class="approval-meta"><span>' + icon("users") + escapeHtml(item.educator_name) + '</span><span>' + icon("clock") + item.duration_minutes + ' min · ' + titleCase(item.content_type) + '</span><span>' + (item.language === 'id' ? 'Bahasa Indonesia' : 'English') + '</span><span>Submitted ' + formatDate(item.created_at) + '</span></div>' + (item.attachment ? attachmentLink(item) : '<p class="attachment-none">No file attached</p>') + '</div><div class="approval-actions"><button class="button secondary small" data-review-id="' + item.id + '" data-decision="approved">' + icon("check") + 'Approve</button><button class="button danger small" data-review-id="' + item.id + '" data-decision="rejected">' + icon("close") + 'Reject</button></div></article>').join("") + '</div>';
 }
 function adminAudit() {
   setPage("Audit reports", "Administrator workspace");
@@ -343,6 +343,7 @@ function bindViewEvents() {
   $$("[data-plan-id]").forEach(button => button.addEventListener("click", () => changePlan(Number(button.dataset.planId), button)));
   $$("[data-review-id]").forEach(button => button.addEventListener("click", () => reviewContent(Number(button.dataset.reviewId), button.dataset.decision, button)));
   $("#content-form")?.addEventListener("submit", submitContent);
+  if ($("#content-form")) addAttachmentField($("#content-form"));
 }
 async function openLesson(itemId, button) {
   setLoading(button, true, "Opening…");
@@ -354,6 +355,7 @@ async function openLesson(itemId, button) {
     $("#dialog-description").textContent = data.item.description;
     $("#dialog-body").textContent = data.lesson.body;
     $("#dialog-metadata").textContent = data.item.category + " · " + data.item.duration_minutes + " minutes";
+    showLessonAttachment(data.item);
     $("#dialog-error").textContent = "";
     $("#dialog-start-quiz")?.classList.toggle("hidden", !state.activeItem.has_quiz);
     $("#progress-slider").value = state.activeItem.progress_percent;
@@ -388,10 +390,19 @@ async function submitContent(event) {
   setLoading(button, true, "Submitting…");
   try {
     const payload = Object.fromEntries(new FormData(event.currentTarget));
+    const file = payload.attachment instanceof File && payload.attachment.size ? payload.attachment : null;
+    delete payload.attachment;
+    const fileProblem = file ? checkAttachment(file) : "";
+    if (fileProblem) { toast(fileProblem, true); return; }
     payload.duration_minutes = Number(payload.duration_minutes);
     const data = await api("/api/content", { method: "POST", body: JSON.stringify(payload) });
+    let message = data.message;
+    if (file) {
+      try { await uploadAttachment(data.item_id, file); message += " File attached."; }
+      catch (error) { message = "The item was saved, but the file was not attached: " + error.message; }
+    }
     state.view = "content";
-    await loadDashboard(data.message);
+    await loadDashboard(message);
   } catch (error) { toast(error.message, true); }
   finally { setLoading(button, false); }
 }

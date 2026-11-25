@@ -45,6 +45,20 @@ CREATE TABLE IF NOT EXISTS learning_items (
     FOREIGN KEY (created_by) REFERENCES users(id)
 );
 
+-- One educator attachment per learning item. stored_name is random and
+-- server-chosen; original_name is cleaned display metadata only.
+CREATE TABLE IF NOT EXISTS content_files (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    learning_item_id INTEGER NOT NULL UNIQUE REFERENCES learning_items(id) ON DELETE CASCADE,
+    stored_name TEXT NOT NULL UNIQUE,
+    original_name TEXT NOT NULL,
+    file_type TEXT NOT NULL CHECK (file_type IN ('pdf', 'png', 'txt')),
+    size_bytes INTEGER NOT NULL CHECK (size_bytes > 0),
+    sha256 TEXT NOT NULL,
+    uploaded_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS plan_entitlements (
     plan_id INTEGER NOT NULL,
     learning_item_id INTEGER NOT NULL,
