@@ -9,6 +9,7 @@ import os
 import re
 import secrets
 import sqlite3
+import traceback
 from datetime import UTC, datetime, timedelta
 from http import HTTPStatus
 from http.cookies import SimpleCookie
@@ -259,6 +260,15 @@ def has_entitlement(connection: sqlite3.Connection, user_id: int, item_id: int) 
     ).fetchone() is not None
 
 
+def grant_default_entitlements(connection: sqlite3.Connection, item_id: int) -> None:
+    """Include a newly approved item in the full-catalogue plans (Plus and Team)."""
+    for row in connection.execute("SELECT id FROM plans WHERE code IN ('plus', 'team')").fetchall():
+        connection.execute(
+            "INSERT OR IGNORE INTO plan_entitlements (plan_id, learning_item_id) VALUES (?, ?)",
+            (row["id"], item_id),
+        )
+
+
 def row_dict(row: sqlite3.Row | None) -> dict | None:
     return dict(row) if row is not None else None
 
@@ -309,9 +319,12 @@ class EduStreamHandler(BaseHTTPRequestHandler):
         if length <= 0 or length > 1_000_000:
             raise ValueError("Request body is missing or too large")
         try:
-            return json.loads(self.rfile.read(length).decode("utf-8"))
+            data = json.loads(self.rfile.read(length).decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError):
             raise ValueError("Request body must be valid JSON")
+        if not isinstance(data, dict):
+            raise ValueError("Request body must be a JSON object")
+        return data
 
     def _session_token(self) -> str | None:
         cookie_header = self.headers.get("Cookie")
@@ -365,7 +378,24 @@ class EduStreamHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _run_safely(self, handler) -> None:
+        """Answer with a JSON 500 instead of dropping the connection on an unexpected error."""
+        try:
+            handler()
+        except Exception:
+            traceback.print_exc()
+            try:
+                self._error("Something went wrong on the server. Please try again.", HTTPStatus.INTERNAL_SERVER_ERROR)
+            except Exception:
+                pass
+
     def do_GET(self) -> None:
+        self._run_safely(self._handle_get)
+
+    def do_POST(self) -> None:
+        self._run_safely(self._handle_post)
+
+    def _handle_get(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/") or "/"
         if not path.startswith("/api/"):
@@ -439,7 +469,7 @@ class EduStreamHandler(BaseHTTPRequestHandler):
 
         self._error("API endpoint not found.", HTTPStatus.NOT_FOUND)
 
-    def do_POST(self) -> None:
+    def _handle_post(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/") or "/"
         try:
@@ -848,6 +878,9 @@ class EduStreamHandler(BaseHTTPRequestHandler):
                 """,
                 (title, category, description, content_type, language, duration, user["id"], status, iso_now()),
             )
+            if status == "approved":
+                # Admin-published items skip review, so grant plan access here too.
+                grant_default_entitlements(connection, cursor.lastrowid)
             record_audit(connection, user["id"], "content_created", f"Learning item {cursor.lastrowid}: {title} ({status})")
             connection.commit()
         self._json({"ok": True, "message": "Content submitted for approval." if status == "pending" else "Content published.", "item_id": cursor.lastrowid})
@@ -863,11 +896,7 @@ class EduStreamHandler(BaseHTTPRequestHandler):
                 return
             connection.execute("UPDATE learning_items SET status = ? WHERE id = ?", (decision, item_id))
             if decision == "approved":
-                for row in connection.execute("SELECT id FROM plans WHERE code IN ('plus', 'team')"):
-                    connection.execute(
-                        "INSERT OR IGNORE INTO plan_entitlements (plan_id, learning_item_id) VALUES (?, ?)",
-                        (row["id"], item_id),
-                    )
+                grant_default_entitlements(connection, item_id)
             record_audit(connection, user["id"], "content_reviewed", f"{item['title']}: {decision}")
             connection.commit()
         self._json({"ok": True, "message": f"Content {decision}."})
