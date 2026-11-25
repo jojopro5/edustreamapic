@@ -43,6 +43,12 @@ These credentials are for a local prototype only.
 - Responsive desktop and mobile interface
 - Accessible mobile navigation, focus handling, and progress controls
 - Password hashing and parameterised SQL queries
+- Sign-in throttling: 5 failed attempts per account per client (20 per client overall) in 15 minutes returns HTTP 429 with `Retry-After`
+- Sessions stored in SQLite (as SHA-256 token digests), so sign-ins survive a server restart
+
+### Running beyond your own machine
+
+The session cookie gets the `Secure` flag automatically when `--host` is anything other than a loopback address (for example `--host 0.0.0.0`). Browsers only send Secure cookies over HTTPS, so serve the site through a TLS proxy in that case. Override with `--secure-cookies on|off` or the `EDUSTREAM_SECURE_COOKIES` environment variable, for example `--secure-cookies off` for a plain-HTTP demo on a classroom network.
 
 ## Project structure
 

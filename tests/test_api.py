@@ -16,7 +16,7 @@ class EduStreamApiTests(unittest.TestCase):
     def setUpClass(cls):
         cls.temp_dir = tempfile.TemporaryDirectory()
         server.DB_PATH = Path(cls.temp_dir.name) / "edustream-test.db"
-        server.SESSIONS.clear()
+        server.LOGIN_THROTTLE.reset()
         server.initialize_database(reset=True)
         cls.httpd = server.ThreadingHTTPServer(("127.0.0.1", 0), server.EduStreamHandler)
         cls.base_url = f"http://127.0.0.1:{cls.httpd.server_port}"

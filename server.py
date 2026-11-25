@@ -9,6 +9,8 @@ import os
 import re
 import secrets
 import sqlite3
+import threading
+import time
 from datetime import UTC, datetime, timedelta
 from http import HTTPStatus
 from http.cookies import SimpleCookie
@@ -28,7 +30,13 @@ SCHEMA_PATH = ROOT / "database" / "schema.sql"
 
 SESSION_COOKIE = "edustream_session"
 SESSION_TTL = timedelta(hours=8)
-SESSIONS: dict[str, dict] = {}
+LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+
+# Login throttling: failed attempts inside the window are counted per
+# (client address, email) and per client address. Successful sign-ins are free.
+LOGIN_WINDOW_SECONDS = 15 * 60
+LOGIN_MAX_FAILURES_PER_ACCOUNT = 5
+LOGIN_MAX_FAILURES_PER_CLIENT = 20
 LEARNER_COURSE_IDS = frozenset({1, 2, 3})
 
 
@@ -263,11 +271,87 @@ def row_dict(row: sqlite3.Row | None) -> dict | None:
     return dict(row) if row is not None else None
 
 
-def clean_sessions() -> None:
+def hash_token(token: str) -> str:
+    # Only a digest is stored, so a copy of the database cannot be replayed as live sessions.
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def create_session(connection: sqlite3.Connection, user_id: int) -> str:
+    token = secrets.token_urlsafe(32)
     now = utc_now()
-    expired = [token for token, session in SESSIONS.items() if session["expires"] <= now]
-    for token in expired:
-        SESSIONS.pop(token, None)
+    connection.execute(
+        "INSERT INTO sessions (token_hash, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)",
+        (hash_token(token), user_id, now.isoformat(timespec="microseconds"), (now + SESSION_TTL).isoformat(timespec="microseconds")),
+    )
+    return token
+
+
+def session_user_id(token: str | None) -> int | None:
+    if not token:
+        return None
+    with connect_db() as connection:
+        connection.execute("DELETE FROM sessions WHERE expires_at <= ?", (utc_now().isoformat(timespec="microseconds"),))
+        row = connection.execute(
+            "SELECT user_id FROM sessions WHERE token_hash = ?",
+            (hash_token(token),),
+        ).fetchone()
+    return row["user_id"] if row else None
+
+
+def delete_session(token: str | None) -> None:
+    if not token:
+        return
+    with connect_db() as connection:
+        connection.execute("DELETE FROM sessions WHERE token_hash = ?", (hash_token(token),))
+
+
+def is_loopback_host(host: str) -> bool:
+    return host in LOOPBACK_HOSTS or host.startswith("127.")
+
+
+class LoginThrottle:
+    """Sliding-window counter of failed sign-ins, kept in memory."""
+
+    def __init__(self) -> None:
+        self._failures: dict[tuple, list[float]] = {}
+        self._lock = threading.Lock()
+
+    def _recent(self, key: tuple, now: float) -> list[float]:
+        stamps = [stamp for stamp in self._failures.get(key, []) if now - stamp < LOGIN_WINDOW_SECONDS]
+        if stamps:
+            self._failures[key] = stamps
+        else:
+            self._failures.pop(key, None)
+        return stamps
+
+    def retry_after(self, client: str, email: str) -> int:
+        """Seconds until another attempt is allowed, or 0 if allowed now."""
+        now = time.monotonic()
+        wait = 0.0
+        with self._lock:
+            for key, limit in (((client, email), LOGIN_MAX_FAILURES_PER_ACCOUNT), ((client,), LOGIN_MAX_FAILURES_PER_CLIENT)):
+                stamps = self._recent(key, now)
+                if len(stamps) >= limit:
+                    wait = max(wait, LOGIN_WINDOW_SECONDS - (now - stamps[-limit]))
+        return int(wait) + 1 if wait > 0 else 0
+
+    def record_failure(self, client: str, email: str) -> None:
+        now = time.monotonic()
+        with self._lock:
+            for key in ((client, email), (client,)):
+                self._recent(key, now)
+                self._failures.setdefault(key, []).append(now)
+
+    def record_success(self, client: str, email: str) -> None:
+        with self._lock:
+            self._failures.pop((client, email), None)
+
+    def reset(self) -> None:
+        with self._lock:
+            self._failures.clear()
+
+
+LOGIN_THROTTLE = LoginThrottle()
 
 
 class EduStreamHandler(BaseHTTPRequestHandler):
@@ -287,12 +371,21 @@ class EduStreamHandler(BaseHTTPRequestHandler):
         if api:
             self.send_header("Cache-Control", "no-store")
 
-    def _json(self, payload: dict | list, status: int = 200, cookies: list[str] | None = None) -> None:
+    def _session_cookie(self, value: str, max_age: int) -> str:
+        cookie = f"{SESSION_COOKIE}={value}; Path=/; HttpOnly; SameSite=Lax; Max-Age={max_age}"
+        if getattr(self.server, "secure_cookies", False):
+            cookie += "; Secure"
+        return cookie
+
+    def _json(self, payload: dict | list, status: int = 200, cookies: list[str] | None = None,
+              headers: dict[str, str] | None = None) -> None:
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self._security_headers(api=True)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
+        for name, value in (headers or {}).items():
+            self.send_header(name, value)
         for cookie in cookies or []:
             self.send_header("Set-Cookie", cookie)
         self.end_headers()
@@ -323,15 +416,13 @@ class EduStreamHandler(BaseHTTPRequestHandler):
         return morsel.value if morsel else None
 
     def _current_user(self) -> dict | None:
-        clean_sessions()
-        token = self._session_token()
-        session = SESSIONS.get(token or "")
-        if not session:
+        user_id = session_user_id(self._session_token())
+        if user_id is None:
             return None
         with connect_db() as connection:
             user = connection.execute(
                 "SELECT id, full_name, email, role FROM users WHERE id = ? AND is_active = 1",
-                (session["user_id"],),
+                (user_id,),
             ).fetchone()
         return row_dict(user)
 
@@ -447,13 +538,8 @@ class EduStreamHandler(BaseHTTPRequestHandler):
                 self._login(self._body())
                 return
             if path == "/api/logout":
-                token = self._session_token()
-                if token:
-                    SESSIONS.pop(token, None)
-                self._json(
-                    {"ok": True},
-                    cookies=[f"{SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0"],
-                )
+                delete_session(self._session_token())
+                self._json({"ok": True}, cookies=[self._session_cookie("", 0)])
                 return
             if path == "/api/progress":
                 user = self._require_user({"learner"})
@@ -503,21 +589,31 @@ class EduStreamHandler(BaseHTTPRequestHandler):
         password = str(body.get("password", ""))
         if not email or not password:
             raise ValueError("Email and password are required.")
+        client = self.client_address[0]
+        wait = LOGIN_THROTTLE.retry_after(client, email)
+        if wait:
+            self._json(
+                {"ok": False, "error": "Too many failed sign-in attempts. Please wait and try again."},
+                HTTPStatus.TOO_MANY_REQUESTS,
+                headers={"Retry-After": str(wait)},
+            )
+            return
         with connect_db() as connection:
             user = connection.execute(
                 "SELECT * FROM users WHERE email = ? AND is_active = 1",
                 (email,),
             ).fetchone()
             if not user or not verify_password(password, user["password_salt"], user["password_hash"]):
+                LOGIN_THROTTLE.record_failure(client, email)
                 self._error("The email or password is incorrect.", HTTPStatus.UNAUTHORIZED)
                 return
-            token = secrets.token_urlsafe(32)
-            SESSIONS[token] = {"user_id": user["id"], "expires": utc_now() + SESSION_TTL}
+            LOGIN_THROTTLE.record_success(client, email)
+            token = create_session(connection, user["id"])
             record_audit(connection, user["id"], "login", "Successful sign in")
             connection.commit()
         self._json(
             {"ok": True, "user": {"id": user["id"], "full_name": user["full_name"], "email": user["email"], "role": user["role"]}},
-            cookies=[f"{SESSION_COOKIE}={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age={int(SESSION_TTL.total_seconds())}"],
+            cookies=[self._session_cookie(token, int(SESSION_TTL.total_seconds()))],
         )
 
     def _dashboard(self, user: dict) -> dict:
@@ -878,10 +974,22 @@ def main() -> None:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=int(os.environ.get("PORT", "8000")))
     parser.add_argument("--reset", action="store_true", help="Reset the prototype database")
+    parser.add_argument(
+        "--secure-cookies",
+        choices=("auto", "on", "off"),
+        default=os.environ.get("EDUSTREAM_SECURE_COOKIES", "auto"),
+        help="Mark the session cookie Secure (HTTPS only). 'auto' turns it on unless --host is a loopback address.",
+    )
     args = parser.parse_args()
 
     initialize_database(reset=args.reset)
     server = ThreadingHTTPServer((args.host, args.port), EduStreamHandler)
+    if args.secure_cookies == "auto":
+        server.secure_cookies = not is_loopback_host(args.host)
+    else:
+        server.secure_cookies = args.secure_cookies == "on"
+    if server.secure_cookies:
+        print("Session cookies are marked Secure: serve the site over HTTPS (for example behind a TLS proxy).")
     print(f"EduStream is running at http://{args.host}:{args.port}")
     print("Press Ctrl+C to stop the server.")
     try:
