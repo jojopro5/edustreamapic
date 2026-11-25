@@ -11,10 +11,6 @@ from unittest.mock import patch
 import server
 
 
-# The four learning items created by server.seed_database().
-SEEDED_ITEM_IDS = {1, 2, 3, 4}
-
-
 class EduStreamApiTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -68,21 +64,15 @@ class EduStreamApiTests(unittest.TestCase):
         self.assertEqual(body["user"]["role"], role)
         return client
 
-    @staticmethod
-    def seeded_ids(dashboard):
-        """Visible seeded items, ignoring items other tests approve along the way."""
-        return [item["id"] for item in dashboard["items"] if item["id"] in SEEDED_ITEM_IDS]
-
     def test_learner_dashboard_and_entitlements(self):
         client = self.login("learner")
         dashboard = self.request(client, "/api/dashboard")
         self.assertEqual(dashboard["role"], "learner")
         self.assertEqual(dashboard["subscription"]["plan_code"], "starter")
-        self.assertEqual(self.seeded_ids(dashboard), [1, 2, 3])
-        seeded = [item for item in dashboard["items"] if item["id"] in SEEDED_ITEM_IDS]
-        self.assertEqual([bool(item["entitled"]) for item in seeded], [True, True, False])
-        self.assertTrue(all(item["has_quiz"] for item in seeded))
-        self.assertTrue(all(item["quiz_question_count"] >= 5 for item in seeded))
+        self.assertEqual([item["id"] for item in dashboard["items"]], [1, 2, 3])
+        self.assertEqual([bool(item["entitled"]) for item in dashboard["items"]], [True, True, False])
+        self.assertTrue(all(item["has_quiz"] for item in dashboard["items"]))
+        self.assertTrue(all(item["quiz_question_count"] >= 5 for item in dashboard["items"]))
 
     def test_locked_content_is_denied_then_unlocked_by_plus_plan(self):
         client = self.login("learner")
@@ -130,15 +120,9 @@ class EduStreamApiTests(unittest.TestCase):
         refreshed = self.request(admin, "/api/dashboard")
         self.assertFalse(any(item["id"] == item_id for item in refreshed["pending_items"]))
 
-        # Approval alone publishes the item to learners; the plan still decides access.
-        learner = self.login("learner")
-        learner_dashboard = self.request(learner, "/api/dashboard")
-        visible = next(item for item in learner_dashboard["items"] if item["id"] == item_id)
-        self.assertFalse(visible["has_quiz"])
-        self.assertEqual(visible["assessment_count"], 0)
-        plan_code = learner_dashboard["subscription"]["plan_code"]
-        self.assertEqual(bool(visible["entitled"]), plan_code in {"plus", "team"})
-        self.request(learner, f"/api/access/{item_id}", expected=200 if visible["entitled"] else 403)
+        # Approved but without a quiz, so learners still cannot see it.
+        learner_items = self.request(self.login("learner"), "/api/dashboard")["items"]
+        self.assertFalse(any(item["id"] == item_id for item in learner_items))
 
     def test_role_protection(self):
         educator = self.login("educator")
@@ -304,45 +288,49 @@ class EduStreamApiTests(unittest.TestCase):
                 self.assertTrue(all(feedback["correct"] for feedback in result["feedback"]))
                 self.assertEqual(self.request(learner, f"/api/quiz/{item_id}")["last_attempt"]["score"], 100)
 
-    def test_visibility_shows_approved_items_without_quizzes_by_plan(self):
+    def test_visibility_requires_quiz_then_follows_plan(self):
         learner = self.login("learner")
         dashboard = self.request(learner, "/api/dashboard")
-        plans = {plan["code"]: plan for plan in dashboard["plans"]}
-        self.request(learner, "/api/subscription", "POST", {"plan_id": plans["starter"]["id"]})
-        self.assertEqual(self.seeded_ids(self.request(learner, "/api/dashboard")), [1, 2, 3])
+        plus = next(plan for plan in dashboard["plans"] if plan["code"] == "plus")
+        self.request(learner, "/api/subscription", "POST", {"plan_id": plus["id"]})
         with server.connect_db() as connection:
             before = [tuple(row) for row in connection.execute("SELECT * FROM progress ORDER BY user_id, learning_item_id")]
             connection.execute("UPDATE learning_items SET status = 'approved' WHERE id = 4")
-            connection.execute("INSERT OR IGNORE INTO plan_entitlements (plan_id, learning_item_id) VALUES (?, 4)", (plans["plus"]["id"],))
+            connection.execute("INSERT OR IGNORE INTO plan_entitlements (plan_id, learning_item_id) VALUES (?, 4)", (plus["id"],))
         try:
-            # Starter: the newly approved item is listed but locked.
             dashboard = self.request(learner, "/api/dashboard")
-            self.assertEqual(self.seeded_ids(dashboard), [1, 2, 3, 4])
-            workshop = next(item for item in dashboard["items"] if item["id"] == 4)
-            self.assertFalse(workshop["entitled"])
-            self.assertFalse(workshop["has_quiz"])
-            self.assertEqual(dashboard["stats"]["locked"], sum(1 for item in dashboard["items"] if not item["entitled"]))
+            self.assertEqual([item["id"] for item in dashboard["items"]], [1, 2, 3])
+            self.assertEqual(dashboard["stats"]["available"], 3)
+            self.assertEqual(dashboard["stats"]["locked"], 0)
             self.request(learner, "/api/access/4", expected=403)
             self.request(learner, "/api/progress", "POST", {"item_id": 4, "progress": 100}, expected=403)
             self.request(learner, "/api/quiz/4", expected=404)
-
-            # Plus includes it, so it opens; there is still no quiz or assessment bank.
-            self.request(learner, "/api/subscription", "POST", {"plan_id": plans["plus"]["id"]})
-            dashboard = self.request(learner, "/api/dashboard")
-            workshop = next(item for item in dashboard["items"] if item["id"] == 4)
-            self.assertTrue(workshop["entitled"])
-            self.request(learner, "/api/access/4")
-            self.request(learner, "/api/quiz/4", expected=404)
-            self.request(learner, "/api/assessments/4", expected=404)
+            # Once the same item has a quiz and assessment bank, it appears without a code-level ID list.
+            with patch.dict(server.QUIZZES, {4: {**server.QUIZZES[1], "item_id": 4}}), \
+                    patch.dict(server.assessments.COURSE_ASSESSMENTS, {4: server.assessments.COURSE_ASSESSMENTS[1]}):
+                dashboard = self.request(learner, "/api/dashboard")
+                self.assertEqual([item["id"] for item in dashboard["items"]], [1, 2, 3, 4])
+                self.assertTrue(next(item for item in dashboard["items"] if item["id"] == 4)["entitled"])
+                self.request(learner, "/api/access/4")
+                self.request(learner, "/api/quiz/4")
+                self.request(learner, "/api/assessments/4")
+            # A Starter plan does not include it, so it is listed but locked.
+            starter = next(plan for plan in dashboard["plans"] if plan["code"] == "starter")
+            self.request(learner, "/api/subscription", "POST", {"plan_id": starter["id"]})
+            with patch.dict(server.QUIZZES, {4: {**server.QUIZZES[1], "item_id": 4}}), \
+                    patch.dict(server.assessments.COURSE_ASSESSMENTS, {4: server.assessments.COURSE_ASSESSMENTS[1]}):
+                dashboard = self.request(learner, "/api/dashboard")
+                self.assertFalse(next(item for item in dashboard["items"] if item["id"] == 4)["entitled"])
+                self.request(learner, "/api/access/4", expected=403)
+                self.request(learner, "/api/quiz/4", expected=403)
+            self.request(learner, "/api/subscription", "POST", {"plan_id": plus["id"]})
         finally:
             with server.connect_db() as connection:
                 connection.execute("UPDATE learning_items SET status = 'pending' WHERE id = 4")
-                connection.execute("DELETE FROM plan_entitlements WHERE learning_item_id = 4 AND plan_id = ?", (plans["plus"]["id"],))
-            self.request(learner, "/api/subscription", "POST", {"plan_id": plans["starter"]["id"]})
+                connection.execute("DELETE FROM plan_entitlements WHERE learning_item_id = 4 AND plan_id = ?", (plus["id"],))
         with server.connect_db() as connection:
             after = [tuple(row) for row in connection.execute("SELECT * FROM progress ORDER BY user_id, learning_item_id")]
         self.assertEqual(after, before)
-        self.assertEqual(self.seeded_ids(self.request(learner, "/api/dashboard")), [1, 2, 3])
         educator_items = self.request(self.login("educator"), "/api/dashboard")["items"]
         self.assertTrue({1, 2, 3, 4}.issubset({item["id"] for item in educator_items}))
 
@@ -355,7 +343,7 @@ class EduStreamApiTests(unittest.TestCase):
             connection.execute("UPDATE learning_items SET language = 'id' WHERE id = 1")
         try:
             dashboard = self.request(learner, "/api/dashboard")
-            self.assertEqual(self.seeded_ids(dashboard), [2, 3])
+            self.assertEqual([item["id"] for item in dashboard["items"]], [2, 3])
             entitled = [item for item in dashboard["items"] if item["entitled"]]
             self.assertEqual(dashboard["stats"]["available"], len(entitled))
             self.assertEqual(dashboard["stats"]["completed"], sum(item["progress_percent"] == 100 for item in entitled))
@@ -374,15 +362,11 @@ class EduStreamApiTests(unittest.TestCase):
             with server.connect_db() as connection:
                 connection.execute("UPDATE learning_items SET language = 'en' WHERE id = 1")
 
-    def test_visibility_requires_approved_status_and_quiz_for_assessments(self):
+    def test_visibility_requires_nonempty_quiz_and_approved_status(self):
         learner = self.login("learner")
         with patch.dict(server.QUIZZES, {1: {**server.QUIZZES[1], "questions": []}}):
-            # An emptied quiz no longer hides the course, it only removes the assessment entry points.
-            dashboard = self.request(learner, "/api/dashboard")
-            self.assertEqual(self.seeded_ids(dashboard), [1, 2, 3])
-            course = next(item for item in dashboard["items"] if item["id"] == 1)
-            self.assertFalse(course["has_quiz"])
-            self.request(learner, "/api/access/1")
+            self.assertEqual([item["id"] for item in self.request(learner, "/api/dashboard")["items"]], [2, 3])
+            self.request(learner, "/api/access/1", expected=403)
             self.request(learner, "/api/quiz/1", expected=404)
             self.request(learner, "/api/quiz/1/submit", "POST", {"answers": {}}, expected=404)
         try:
@@ -390,7 +374,7 @@ class EduStreamApiTests(unittest.TestCase):
                 with self.subTest(status=status):
                     with server.connect_db() as connection:
                         connection.execute("UPDATE learning_items SET status = ? WHERE id = 1", (status,))
-                    self.assertEqual(self.seeded_ids(self.request(learner, "/api/dashboard")), [2, 3])
+                    self.assertEqual([item["id"] for item in self.request(learner, "/api/dashboard")["items"]], [2, 3])
                     self.request(learner, "/api/access/1", expected=403)
                     self.request(learner, "/api/quiz/1", expected=403)
         finally:

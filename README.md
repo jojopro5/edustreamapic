@@ -82,9 +82,9 @@ The module-and-assessment flow is inspired by [Coursera's assignment guidance](h
 
 Each quiz requires an active subscription that includes its course. Starter includes Digital Safety and SQL Essentials; Secure Web requires Plus or Team.
 
-The learner catalogue is driven by the database: every learning item with `status = 'approved'` and a non-Indonesian `language` is listed for learners. Pending, rejected and Indonesian (`id`) items stay hidden. Listing an item does not grant access: opening it, updating progress and taking its quizzes all still require an active subscription whose plan has a `plan_entitlements` row for that item. When an admin approves an item it is added to the Plus and Team plans, so Starter learners see it as locked. Existing records and educator/admin review access are preserved. Learner statistics count only visible items.
+The learner catalogue is not a fixed list of IDs. A learning item is shown to learners when it is approved, is not marked Indonesian (`id`), and has both a nonempty practice quiz in `quizzes.py` and module banks in `assessment_content.py`. Pending, rejected, Indonesian and quiz-less items stay hidden, even after approval. Listing an item does not grant access: opening it, updating progress and taking its quizzes all still require an active subscription whose plan has a `plan_entitlements` row for that item. When an admin approves an item it is added to the Plus and Team plans. Existing records and educator/admin review access are preserved. Learner statistics count only visible courses.
 
-Items only show assessment links when they have both a practice quiz in `quizzes.py` and module banks in `assessment_content.py`. A visible item without them can still be opened and tracked; reaching 100% progress marks it complete.
+To add a course to the learner catalogue, approve it and add its quiz and module banks keyed by its learning item ID.
 
 The content form records English (`en`) or Bahasa Indonesia (`id`). Language is educator-supplied metadata, not automatic language detection. Existing curated English records receive `en` during the automatic schema migration.
 
