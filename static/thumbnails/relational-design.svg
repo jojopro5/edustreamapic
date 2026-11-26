@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720" role="img" aria-label="Tables, keys and relations">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2c1856"/>
+      <stop offset="1" stop-color="#6a44b8"/>
+    </linearGradient>
+  </defs>
+  <rect width="1280" height="720" fill="url(#bg)"/>
+  <rect x="867" y="251" width="129" height="129" rx="18" fill="#cdb8f5" opacity="0.11" transform="rotate(-4 867 251)"/>
+  <circle cx="720" cy="108" r="66" fill="none" stroke="#cdb8f5" stroke-width="10" opacity="0.13"/>
+  <rect x="1100" y="505" width="114" height="114" rx="18" fill="#cdb8f5" opacity="0.11" transform="rotate(-15 1100 505)"/>
+  <circle cx="1257" cy="448" r="79" fill="none" stroke="#cdb8f5" stroke-width="10" opacity="0.18"/>
+  <rect x="1111" y="297" width="114" height="114" rx="18" fill="#cdb8f5" opacity="0.13" transform="rotate(10 1111 297)"/>
+  <circle cx="810" cy="180" r="72" fill="none" stroke="#cdb8f5" stroke-width="10" opacity="0.10"/>
+  <text x="96" y="92" fill="#cdb8f5" font-family="Arial, Helvetica, sans-serif" font-size="34" font-weight="700" letter-spacing="6">STRUCTURE</text>
+  <text x="96" y="178" fill="#ffffff" font-family="Arial, Helvetica, sans-serif" font-size="84" font-weight="800"><tspan x="96" dy="0">Tables, keys</tspan><tspan x="96" dy="92">and relations</tspan></text>
+  <rect x="96" y="560" width="300" height="60" rx="12" fill="#ffffff" opacity="0.14"/>
+  <text x="120" y="601" fill="#ffffff" font-family="Arial, Helvetica, sans-serif" font-size="28" font-weight="700">EduStream study clip</text>
+</svg>

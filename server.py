@@ -9,6 +9,8 @@ import os
 import re
 import secrets
 import sqlite3
+import threading
+import time
 from datetime import UTC, datetime, timedelta
 from http import HTTPStatus
 from http.cookies import SimpleCookie
@@ -16,7 +18,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
+import uploads
+
 from quizzes import QUIZZES, public_quiz
+import backups
 import assessments
 
 
@@ -28,7 +33,13 @@ SCHEMA_PATH = ROOT / "database" / "schema.sql"
 
 SESSION_COOKIE = "edustream_session"
 SESSION_TTL = timedelta(hours=8)
-SESSIONS: dict[str, dict] = {}
+LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+
+# Login throttling: failed attempts inside the window are counted per
+# (client address, email) and per client address. Successful sign-ins are free.
+LOGIN_WINDOW_SECONDS = 15 * 60
+LOGIN_MAX_FAILURES_PER_ACCOUNT = 5
+LOGIN_MAX_FAILURES_PER_CLIENT = 20
 
 
 class ClosingConnection(sqlite3.Connection):
@@ -207,6 +218,9 @@ def record_audit(connection: sqlite3.Connection, user_id: int | None, event_type
     )
 
 
+SUBSCRIPTION_PERIOD_DAYS = 30
+
+
 def active_subscription(connection: sqlite3.Connection, user_id: int) -> sqlite3.Row | None:
     return connection.execute(
         """
@@ -244,6 +258,21 @@ def learner_visible(item: dict | sqlite3.Row) -> bool:
     )
 
 
+def course_completion(connection: sqlite3.Connection, user_id: int, item_id: int, progress_percent: int) -> dict:
+    """Single completion rule used by the dashboard counter and the progress endpoint.
+
+    A course with assessments is complete only when every assessment is passed.
+    The self-reported progress slider cannot complete an assessed course on its own.
+    A course without assessments is complete at 100% progress.
+    """
+    status = assessments.completion(connection, user_id, item_id)
+    if status["total_assessments"]:
+        completed = status["completed"]
+    else:
+        completed = progress_percent >= 100
+    return {**status, "completed": completed}
+
+
 def has_entitlement(connection: sqlite3.Connection, user_id: int, item_id: int) -> bool:
     item = connection.execute(
         "SELECT id, status, language FROM learning_items WHERE id = ?", (item_id,)
@@ -271,11 +300,87 @@ def row_dict(row: sqlite3.Row | None) -> dict | None:
     return dict(row) if row is not None else None
 
 
-def clean_sessions() -> None:
+def hash_token(token: str) -> str:
+    # Only a digest is stored, so a copy of the database cannot be replayed as live sessions.
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def create_session(connection: sqlite3.Connection, user_id: int) -> str:
+    token = secrets.token_urlsafe(32)
     now = utc_now()
-    expired = [token for token, session in SESSIONS.items() if session["expires"] <= now]
-    for token in expired:
-        SESSIONS.pop(token, None)
+    connection.execute(
+        "INSERT INTO sessions (token_hash, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)",
+        (hash_token(token), user_id, now.isoformat(timespec="microseconds"), (now + SESSION_TTL).isoformat(timespec="microseconds")),
+    )
+    return token
+
+
+def session_user_id(token: str | None) -> int | None:
+    if not token:
+        return None
+    with connect_db() as connection:
+        connection.execute("DELETE FROM sessions WHERE expires_at <= ?", (utc_now().isoformat(timespec="microseconds"),))
+        row = connection.execute(
+            "SELECT user_id FROM sessions WHERE token_hash = ?",
+            (hash_token(token),),
+        ).fetchone()
+    return row["user_id"] if row else None
+
+
+def delete_session(token: str | None) -> None:
+    if not token:
+        return
+    with connect_db() as connection:
+        connection.execute("DELETE FROM sessions WHERE token_hash = ?", (hash_token(token),))
+
+
+def is_loopback_host(host: str) -> bool:
+    return host in LOOPBACK_HOSTS or host.startswith("127.")
+
+
+class LoginThrottle:
+    """Sliding-window counter of failed sign-ins, kept in memory."""
+
+    def __init__(self) -> None:
+        self._failures: dict[tuple, list[float]] = {}
+        self._lock = threading.Lock()
+
+    def _recent(self, key: tuple, now: float) -> list[float]:
+        stamps = [stamp for stamp in self._failures.get(key, []) if now - stamp < LOGIN_WINDOW_SECONDS]
+        if stamps:
+            self._failures[key] = stamps
+        else:
+            self._failures.pop(key, None)
+        return stamps
+
+    def retry_after(self, client: str, email: str) -> int:
+        """Seconds until another attempt is allowed, or 0 if allowed now."""
+        now = time.monotonic()
+        wait = 0.0
+        with self._lock:
+            for key, limit in (((client, email), LOGIN_MAX_FAILURES_PER_ACCOUNT), ((client,), LOGIN_MAX_FAILURES_PER_CLIENT)):
+                stamps = self._recent(key, now)
+                if len(stamps) >= limit:
+                    wait = max(wait, LOGIN_WINDOW_SECONDS - (now - stamps[-limit]))
+        return int(wait) + 1 if wait > 0 else 0
+
+    def record_failure(self, client: str, email: str) -> None:
+        now = time.monotonic()
+        with self._lock:
+            for key in ((client, email), (client,)):
+                self._recent(key, now)
+                self._failures.setdefault(key, []).append(now)
+
+    def record_success(self, client: str, email: str) -> None:
+        with self._lock:
+            self._failures.pop((client, email), None)
+
+    def reset(self) -> None:
+        with self._lock:
+            self._failures.clear()
+
+
+LOGIN_THROTTLE = LoginThrottle()
 
 
 class EduStreamHandler(BaseHTTPRequestHandler):
@@ -295,12 +400,21 @@ class EduStreamHandler(BaseHTTPRequestHandler):
         if api:
             self.send_header("Cache-Control", "no-store")
 
-    def _json(self, payload: dict | list, status: int = 200, cookies: list[str] | None = None) -> None:
+    def _session_cookie(self, value: str, max_age: int) -> str:
+        cookie = f"{SESSION_COOKIE}={value}; Path=/; HttpOnly; SameSite=Lax; Max-Age={max_age}"
+        if getattr(self.server, "secure_cookies", False):
+            cookie += "; Secure"
+        return cookie
+
+    def _json(self, payload: dict | list, status: int = 200, cookies: list[str] | None = None,
+              headers: dict[str, str] | None = None) -> None:
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self._security_headers(api=True)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
+        for name, value in (headers or {}).items():
+            self.send_header(name, value)
         for cookie in cookies or []:
             self.send_header("Set-Cookie", cookie)
         self.end_headers()
@@ -331,15 +445,13 @@ class EduStreamHandler(BaseHTTPRequestHandler):
         return morsel.value if morsel else None
 
     def _current_user(self) -> dict | None:
-        clean_sessions()
-        token = self._session_token()
-        session = SESSIONS.get(token or "")
-        if not session:
+        user_id = session_user_id(self._session_token())
+        if user_id is None:
             return None
         with connect_db() as connection:
             user = connection.execute(
                 "SELECT id, full_name, email, role FROM users WHERE id = ? AND is_active = 1",
-                (session["user_id"],),
+                (user_id,),
             ).fetchone()
         return row_dict(user)
 
@@ -380,6 +492,12 @@ class EduStreamHandler(BaseHTTPRequestHandler):
             self._serve_static(parsed.path)
             return
 
+        if path == "/api/admin/backups":
+            user = self._require_user({"admin"})
+            if user:
+                self._json({"ok": True, "backups": backups.list_backups(DB_PATH)})
+            return
+
         if path == "/api/session":
             user = self._current_user()
             with connect_db() as connection:
@@ -415,6 +533,13 @@ class EduStreamHandler(BaseHTTPRequestHandler):
                 self._get_quiz(user, int(match.group(1)))
             return
 
+        match = re.fullmatch(r"/api/content/(\d+)/attachment", path)
+        if match:
+            user = self._require_user()
+            if user:
+                self._download_attachment(user, int(match.group(1)))
+            return
+
         match = re.fullmatch(r"/api/access/(\d+)", path)
         if match:
             user = self._require_user({"learner"})
@@ -433,10 +558,11 @@ class EduStreamHandler(BaseHTTPRequestHandler):
                     return
                 record_audit(connection, user["id"], "content_accessed", f"Learning item {item_id}")
                 connection.commit()
+                attachment = uploads.public_info(uploads.file_record(connection, item_id))
             self._json(
                 {
                     "ok": True,
-                    "item": dict(item),
+                    "item": {**dict(item), "attachment": attachment},
                     "lesson": {
                         "heading": "Lesson available",
                         "body": "Your entitlement was verified successfully. This prototype can now deliver the protected learning material.",
@@ -455,13 +581,8 @@ class EduStreamHandler(BaseHTTPRequestHandler):
                 self._login(self._body())
                 return
             if path == "/api/logout":
-                token = self._session_token()
-                if token:
-                    SESSIONS.pop(token, None)
-                self._json(
-                    {"ok": True},
-                    cookies=[f"{SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0"],
-                )
+                delete_session(self._session_token())
+                self._json({"ok": True}, cookies=[self._session_cookie("", 0)])
                 return
             if path == "/api/progress":
                 user = self._require_user({"learner"})
@@ -472,6 +593,12 @@ class EduStreamHandler(BaseHTTPRequestHandler):
                 user = self._require_user({"learner"})
                 if user:
                     self._change_subscription(user, self._body())
+                return
+            match = re.fullmatch(r"/api/content/(\d+)/attachment", path)
+            if match:
+                user = self._require_user({"educator", "admin"})
+                if user:
+                    self._upload_attachment(user, int(match.group(1)))
                 return
             if path == "/api/content":
                 user = self._require_user({"educator", "admin"})
@@ -502,6 +629,20 @@ class EduStreamHandler(BaseHTTPRequestHandler):
                 if user:
                     self._review_content(user, int(match.group(1)), self._body())
                 return
+            if path == "/api/admin/backups":
+                user = self._require_user({"admin"})
+                if user:
+                    self._create_backup(user)
+                return
+            match = re.fullmatch(r"/api/admin/backups/([A-Za-z0-9.-]{1,80})/(verify|restore)", path)
+            if match:
+                user = self._require_user({"admin"})
+                if user:
+                    if match.group(2) == "verify":
+                        self._verify_backup(user, match.group(1))
+                    else:
+                        self._restore_backup(user, match.group(1), self._body())
+                return
             self._error("API endpoint not found.", HTTPStatus.NOT_FOUND)
         except ValueError as exc:
             self._error(str(exc), HTTPStatus.BAD_REQUEST)
@@ -511,21 +652,31 @@ class EduStreamHandler(BaseHTTPRequestHandler):
         password = str(body.get("password", ""))
         if not email or not password:
             raise ValueError("Email and password are required.")
+        client = self.client_address[0]
+        wait = LOGIN_THROTTLE.retry_after(client, email)
+        if wait:
+            self._json(
+                {"ok": False, "error": "Too many failed sign-in attempts. Please wait and try again."},
+                HTTPStatus.TOO_MANY_REQUESTS,
+                headers={"Retry-After": str(wait)},
+            )
+            return
         with connect_db() as connection:
             user = connection.execute(
                 "SELECT * FROM users WHERE email = ? AND is_active = 1",
                 (email,),
             ).fetchone()
             if not user or not verify_password(password, user["password_salt"], user["password_hash"]):
+                LOGIN_THROTTLE.record_failure(client, email)
                 self._error("The email or password is incorrect.", HTTPStatus.UNAUTHORIZED)
                 return
-            token = secrets.token_urlsafe(32)
-            SESSIONS[token] = {"user_id": user["id"], "expires": utc_now() + SESSION_TTL}
+            LOGIN_THROTTLE.record_success(client, email)
+            token = create_session(connection, user["id"])
             record_audit(connection, user["id"], "login", "Successful sign in")
             connection.commit()
         self._json(
             {"ok": True, "user": {"id": user["id"], "full_name": user["full_name"], "email": user["email"], "role": user["role"]}},
-            cookies=[f"{SESSION_COOKIE}={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age={int(SESSION_TTL.total_seconds())}"],
+            cookies=[self._session_cookie(token, int(SESSION_TTL.total_seconds()))],
         )
 
     def _dashboard(self, user: dict) -> dict:
@@ -557,7 +708,8 @@ class EduStreamHandler(BaseHTTPRequestHandler):
                 for item in items:
                     item["has_quiz"] = True
                     item["quiz_question_count"] = sum(entry["question_count"] for entry in assessments.definitions(item["id"]))
-                    assessment_status = assessments.completion(connection, user["id"], item["id"])
+                    assessment_status = course_completion(connection, user["id"], item["id"], item["progress_percent"])
+                    item["completed"] = assessment_status["completed"]
                     item["assessment_completed"] = assessment_status["completed"]
                     item["assessments_passed"] = assessment_status["passed_count"]
                     item["assessment_count"] = assessment_status["total_assessments"]
@@ -579,7 +731,7 @@ class EduStreamHandler(BaseHTTPRequestHandler):
                     "payments": payments,
                     "stats": {
                         "available": len(entitled),
-                        "completed": sum(1 for item in entitled if item["assessment_completed"]),
+                        "completed": sum(1 for item in entitled if item["completed"]),
                         "average_progress": average_progress,
                         "locked": sum(1 for item in items if not item["entitled"]),
                     },
@@ -596,6 +748,8 @@ class EduStreamHandler(BaseHTTPRequestHandler):
                         (user["id"],),
                     )
                 ]
+                for item in items:
+                    item["attachment"] = uploads.public_info(uploads.file_record(connection, item["id"]))
                 return {
                     "role": "educator",
                     "user": user,
@@ -621,6 +775,8 @@ class EduStreamHandler(BaseHTTPRequestHandler):
                     """
                 )
             ]
+            for item in pending_items:
+                item["attachment"] = uploads.public_info(uploads.file_record(connection, item["id"]))
             audit = [
                 dict(row)
                 for row in connection.execute(
@@ -766,6 +922,85 @@ class EduStreamHandler(BaseHTTPRequestHandler):
             }
         )
 
+    def _upload_root(self) -> Path:
+        return DB_PATH.parent / "uploads"
+
+    def _upload_attachment(self, user: dict, item_id: int) -> None:
+        """Receive a raw file body; the display name comes from the X-File-Name header."""
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            length = -1
+        raw_name = unquote(self.headers.get("X-File-Name", ""))
+        with connect_db() as connection:
+            item = connection.execute(
+                "SELECT id, title, status, created_by FROM learning_items WHERE id = ?", (item_id,)
+            ).fetchone()
+            if not item:
+                self._error("Learning item was not found.", HTTPStatus.NOT_FOUND)
+                return
+            try:
+                if length < 0:
+                    raise uploads.UploadError("Invalid request length.", reason="bad_length")
+                if length > uploads.MAX_BYTES:
+                    # Refuse before reading so an oversized body is never held in memory.
+                    self.close_connection = True
+                    raise uploads.UploadError("Files must be 5 MB or smaller.", 413, "too_large")
+                data = self.rfile.read(length) if length else b""
+                info = uploads.store(connection, self._upload_root(), item, user, raw_name, data)
+            except uploads.UploadError as error:
+                record_audit(connection, user["id"], "content_file_rejected", f"Learning item {item_id}: {error.reason}")
+                connection.commit()
+                self._error(str(error), error.status)
+                return
+            record_audit(
+                connection, user["id"], "content_file_uploaded",
+                f"Learning item {item_id}: {info['type']}, {info['size_bytes']} bytes, sha256 {info['sha256'][:16]}"
+                + (" (replaced)" if info["replaced"] else ""),
+            )
+            connection.commit()
+        self._json({"ok": True, "message": "File attached.", "attachment": info})
+
+    def _download_attachment(self, user: dict, item_id: int) -> None:
+        with connect_db() as connection:
+            item = connection.execute(
+                "SELECT id, status, language, created_by FROM learning_items WHERE id = ?", (item_id,)
+            ).fetchone()
+            if user["role"] == "learner":
+                allowed = bool(item) and has_entitlement(connection, user["id"], item_id)
+            elif user["role"] == "educator":
+                allowed = bool(item) and item["created_by"] == user["id"]
+            else:
+                allowed = bool(item)
+            record = uploads.file_record(connection, item_id) if allowed else None
+            if not allowed:
+                record_audit(connection, user["id"], "content_file_denied", f"Learning item {item_id}")
+                connection.commit()
+                self._error("This file is unavailable or not included in your active subscription.", HTTPStatus.FORBIDDEN)
+                return
+            if not record:
+                self._error("This learning item has no attached file.", HTTPStatus.NOT_FOUND)
+                return
+            path = self._upload_root() / record["stored_name"]
+            if not path.is_file():
+                self._error("The attached file is missing from storage.", HTTPStatus.NOT_FOUND)
+                return
+            data = path.read_bytes()
+            if hashlib.sha256(data).hexdigest() != record["sha256"]:
+                record_audit(connection, user["id"], "content_file_integrity_failed", f"Learning item {item_id}")
+                connection.commit()
+                self._error("The attached file failed its integrity check.", HTTPStatus.INTERNAL_SERVER_ERROR)
+                return
+            record_audit(connection, user["id"], "content_file_downloaded", f"Learning item {item_id}")
+            connection.commit()
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Referrer-Policy", "no-referrer")
+        for name, value in uploads.download_headers(record).items():
+            self.send_header(name, value)
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
     def _update_progress(self, user: dict, body: dict) -> None:
         try:
             item_id = int(body.get("item_id"))
@@ -792,37 +1027,88 @@ class EduStreamHandler(BaseHTTPRequestHandler):
             )
             record_audit(connection, user["id"], "progress_updated", f"Learning item {item_id}: {progress}%")
             connection.commit()
-        self._json({"ok": True, "message": "Progress updated.", "progress": progress})
+            status = course_completion(connection, user["id"], item_id, progress)
+        if status["completed"]:
+            message = "Course completed. Well done!"
+        elif progress == 100 and status["total_assessments"]:
+            remaining = status["total_assessments"] - status["passed_count"]
+            message = (
+                f"Progress saved at 100%. Pass the remaining {remaining} "
+                f"assessment{'s' if remaining != 1 else ''} to complete this course."
+            )
+        else:
+            message = f"Your progress is saved at {progress}%."
+        self._json({
+            "ok": True,
+            "message": message,
+            "progress": progress,
+            "completed": status["completed"],
+            "assessments_passed": status["passed_count"],
+            "assessment_count": status["total_assessments"],
+        })
 
     def _change_subscription(self, user: dict, body: dict) -> None:
+        """Quote a plan change or renewal, and charge only when the learner confirms it.
+
+        Without "confirm": true the endpoint returns a quote and records nothing.
+        Paid days are kept: the new 30-day period starts from the current end date
+        when the active subscription has not yet expired, otherwise from today.
+        """
         try:
             plan_id = int(body.get("plan_id"))
         except (TypeError, ValueError):
             raise ValueError("Select a valid subscription plan.")
+        confirmed = body.get("confirm") is True
         with connect_db() as connection:
             plan = connection.execute("SELECT * FROM plans WHERE id = ?", (plan_id,)).fetchone()
             if not plan:
                 raise ValueError("The selected subscription plan does not exist.")
+            current = active_subscription(connection, user["id"])
+            today = utc_now().date()
+            current_end = datetime.fromisoformat(current["end_date"]).date() if current else None
+            period_start = max(today, current_end) if current_end else today
+            new_end = period_start + timedelta(days=SUBSCRIPTION_PERIOD_DAYS)
+            action = "renew" if current and current["plan_id"] == plan_id else ("change" if current else "subscribe")
+            quote = {
+                "action": action,
+                "plan_id": plan["id"],
+                "plan_name": plan["name"],
+                "amount": plan["price_monthly"],
+                "current_plan_name": current["plan_name"] if current else None,
+                "current_end_date": current_end.isoformat() if current_end else None,
+                "new_end_date": new_end.isoformat(),
+                "days_kept": (current_end - today).days if current_end and current_end > today else 0,
+            }
+            if not confirmed:
+                self._json({"ok": True, "requires_confirmation": True, "quote": quote})
+                return
             connection.execute(
                 "UPDATE subscriptions SET status = 'cancelled' WHERE user_id = ? AND status = 'active'",
                 (user["id"],),
             )
-            start_date = utc_now().date()
-            end_date = start_date + timedelta(days=30)
             cursor = connection.execute(
                 """
                 INSERT INTO subscriptions (user_id, plan_id, status, start_date, end_date, created_at)
                 VALUES (?, ?, 'active', ?, ?, ?)
                 """,
-                (user["id"], plan_id, start_date.isoformat(), end_date.isoformat(), iso_now()),
+                (user["id"], plan_id, today.isoformat(), new_end.isoformat(), iso_now()),
             )
             connection.execute(
                 "INSERT INTO payments (user_id, subscription_id, amount, status, paid_at) VALUES (?, ?, ?, 'paid', ?)",
                 (user["id"], cursor.lastrowid, plan["price_monthly"], iso_now()),
             )
-            record_audit(connection, user["id"], "subscription_changed", f"Plan changed to {plan['name']}")
+            verb = "renewed" if action == "renew" else "changed to"
+            record_audit(
+                connection, user["id"], "subscription_changed",
+                f"Plan {verb} {plan['name']}; access ends {new_end.isoformat()}",
+            )
             connection.commit()
-        self._json({"ok": True, "message": f"Your {plan['name']} plan is now active."})
+        message = (
+            f"Your {plan['name']} plan is renewed until {new_end.isoformat()}."
+            if action == "renew"
+            else f"Your {plan['name']} plan is now active until {new_end.isoformat()}."
+        )
+        self._json({"ok": True, "message": message, "quote": quote})
 
     def _create_content(self, user: dict, body: dict) -> None:
         title = str(body.get("title", "")).strip()
@@ -880,16 +1166,95 @@ class EduStreamHandler(BaseHTTPRequestHandler):
             connection.commit()
         self._json({"ok": True, "message": f"Content {decision}."})
 
+    def _create_backup(self, user: dict) -> None:
+        ref = secrets.token_hex(4)
+        try:
+            manifest = backups.create_backup(DB_PATH, f"{user['full_name']} (user {user['id']})")
+        except (OSError, sqlite3.Error, backups.BackupError) as exc:
+            with connect_db() as connection:
+                record_audit(connection, user["id"], "backup_failed", f"outcome=failure ref={ref} reason={exc}")
+                connection.commit()
+            self._error("The backup could not be created. Please try again.", HTTPStatus.INTERNAL_SERVER_ERROR)
+            return
+        with connect_db() as connection:
+            record_audit(connection, user["id"], "backup_created",
+                         f"outcome=success ref={ref} backup={manifest['file']} sha256={manifest['sha256'][:16]}")
+            connection.commit()
+        self._json({"ok": True, "message": "Backup created and verified.", "backup": manifest["file"]})
+
+    def _verify_backup(self, user: dict, name: str) -> None:
+        ref = secrets.token_hex(4)
+        if not backups.exists(DB_PATH, name):
+            self._error("Backup was not found.", HTTPStatus.NOT_FOUND)
+            return
+        result = backups.verify_backup(DB_PATH, name)
+        with connect_db() as connection:
+            if result["ok"]:
+                record_audit(connection, user["id"], "backup_verified", f"outcome=success ref={ref} backup={name}")
+            else:
+                record_audit(connection, user["id"], "backup_verify_failed",
+                             f"outcome=failure ref={ref} backup={name} checks={' | '.join(result['problems'])}")
+            connection.commit()
+        self._json({"ok": True, "name": name, "valid": result["ok"], "problems": result["problems"]})
+
+    def _restore_backup(self, user: dict, name: str, body: dict) -> None:
+        ref = secrets.token_hex(4)
+        if body.get("confirm") != name:
+            raise ValueError("Type the backup name to confirm the restore.")
+        if not backups.exists(DB_PATH, name):
+            self._error("Backup was not found.", HTTPStatus.NOT_FOUND)
+            return
+        try:
+            outcome = backups.restore_backup(DB_PATH, name, f"{user['full_name']} (user {user['id']})")
+        except backups.BackupError as exc:
+            with connect_db() as connection:
+                record_audit(connection, user["id"], "backup_restore_refused",
+                             f"outcome=refused ref={ref} backup={name} checks={' | '.join(exc.problems)}")
+                connection.commit()
+            self._json({"ok": False, "error": str(exc), "problems": exc.problems}, HTTPStatus.CONFLICT)
+            return
+        # Bring an older backup up to the current schema, then end every session:
+        # accounts and roles may differ in the restored data (C-T4-BR-09).
+        initialize_database()
+        sessions = globals().get("SESSIONS")
+        if isinstance(sessions, dict):
+            sessions.clear()
+        with connect_db() as connection:
+            if connection.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'sessions'").fetchone():
+                connection.execute("DELETE FROM sessions")
+            actor = user["id"] if connection.execute("SELECT 1 FROM users WHERE id = ?", (user["id"],)).fetchone() else None
+            record_audit(connection, actor, "backup_restored",
+                         f"outcome=success ref={ref} backup={name} by={user['email']} "
+                         f"safety_backup={outcome['safety_backup']['file']} carried_audit_events={outcome['carried_audit']}")
+            connection.commit()
+        self._json(
+            {"ok": True, "message": "Backup restored. Everyone, including you, must sign in again.",
+             "safety_backup": outcome["safety_backup"]["file"]},
+            cookies=[f"{SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0"],
+        )
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run the EduStream prototype server")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=int(os.environ.get("PORT", "8000")))
     parser.add_argument("--reset", action="store_true", help="Reset the prototype database")
+    parser.add_argument(
+        "--secure-cookies",
+        choices=("auto", "on", "off"),
+        default=os.environ.get("EDUSTREAM_SECURE_COOKIES", "auto"),
+        help="Mark the session cookie Secure (HTTPS only). 'auto' turns it on unless --host is a loopback address.",
+    )
     args = parser.parse_args()
 
     initialize_database(reset=args.reset)
     server = ThreadingHTTPServer((args.host, args.port), EduStreamHandler)
+    if args.secure_cookies == "auto":
+        server.secure_cookies = not is_loopback_host(args.host)
+    else:
+        server.secure_cookies = args.secure_cookies == "on"
+    if server.secure_cookies:
+        print("Session cookies are marked Secure: serve the site over HTTPS (for example behind a TLS proxy).")
     print(f"EduStream is running at http://{args.host}:{args.port}")
     print("Press Ctrl+C to stop the server.")
     try:
