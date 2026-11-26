@@ -118,9 +118,11 @@ The module-and-assessment flow is inspired by [Coursera's assignment guidance](h
 
 Each quiz requires an active subscription that includes its course. Starter includes Digital Safety and SQL Essentials; Secure Web requires Plus. The Team plan is hidden: it is not listed or sold, but existing Team records and their course access are kept.
 
-Only these three selected courses (IDs 1–3) are eligible for the learner catalogue. They must be approved, have a nonempty quiz, and be marked English. All other resources, including Indonesian content, stay hidden from learners even after approval. The same restriction applies to direct content access, progress updates, and quiz requests. Existing records and educator/admin review access are preserved. Learner statistics count only visible courses.
+The learner catalogue is not a fixed list of IDs. A learning item is shown to learners when it is approved, is not marked Indonesian (`id`), and has both a nonempty practice quiz in `quizzes.py` and module banks in `assessment_content.py`. Pending, rejected, Indonesian and quiz-less items stay hidden, even after approval. Listing an item does not grant access: opening it, updating progress and taking its quizzes all still require an active subscription whose plan has a `plan_entitlements` row for that item. When an admin approves an item it is added to the Plus and Team plans. Existing records and educator/admin review access are preserved. Learner statistics count only visible courses.
 
-The content form records English (`en`) or Bahasa Indonesia (`id`). Language is educator-supplied metadata, not automatic language detection. Existing curated English records receive `en` during the automatic schema migration. To expand the learner catalogue later, review `LEARNER_COURSE_IDS` in `server.py`, its eligibility checks, and the matching module banks in `assessment_content.py`.
+To add a course to the learner catalogue, approve it and add its quiz and module banks keyed by its learning item ID.
+
+The content form records English (`en`) or Bahasa Indonesia (`id`). Language is educator-supplied metadata, not automatic language detection. Existing curated English records receive `en` during the automatic schema migration.
 
 Previous five-question practice results remain in `quiz_attempts` and their legacy API is retained for compatibility. They do not count as module passes. New drafts and grades are stored in `assessment_attempts`; existing learning and account records are preserved during startup migration.
 
