@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720" role="img" aria-label="What security protects">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0f2f66"/>
+      <stop offset="1" stop-color="#2667d8"/>
+    </linearGradient>
+  </defs>
+  <rect width="1280" height="720" fill="url(#bg)"/>
+  <rect x="1160" y="79" width="163" height="163" rx="18" fill="#9cc3ff" opacity="0.16" transform="rotate(-2 1160 79)"/>
+  <circle cx="777" cy="97" r="85" fill="none" stroke="#9cc3ff" stroke-width="10" opacity="0.18"/>
+  <rect x="1206" y="368" width="60" height="60" rx="18" fill="#9cc3ff" opacity="0.18" transform="rotate(-18 1206 368)"/>
+  <circle cx="773" cy="466" r="151" fill="none" stroke="#9cc3ff" stroke-width="10" opacity="0.18"/>
+  <rect x="770" y="282" width="128" height="128" rx="18" fill="#9cc3ff" opacity="0.20" transform="rotate(-2 770 282)"/>
+  <circle cx="1122" cy="602" r="162" fill="none" stroke="#9cc3ff" stroke-width="10" opacity="0.11"/>
+  <text x="96" y="92" fill="#9cc3ff" font-family="Arial, Helvetica, sans-serif" font-size="34" font-weight="700" letter-spacing="6">START HERE</text>
+  <text x="96" y="178" fill="#ffffff" font-family="Arial, Helvetica, sans-serif" font-size="84" font-weight="800"><tspan x="96" dy="0">What security</tspan><tspan x="96" dy="92">protects</tspan></text>
+  <rect x="96" y="560" width="300" height="60" rx="12" fill="#ffffff" opacity="0.14"/>
+  <text x="120" y="601" fill="#ffffff" font-family="Arial, Helvetica, sans-serif" font-size="28" font-weight="700">EduStream study clip</text>
+</svg>

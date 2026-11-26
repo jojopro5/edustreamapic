@@ -1,5 +1,6 @@
 // Original course introductions and links to external educational resources.
 // Keep public guides separate from subscription-protected learning access.
+// Thumbnails are synthetic SVGs made by tools/generate_thumbnails.py, not copied from video sites.
 const COURSE_GUIDES = {
   blue: {
     introduction: "Safer habits start with understanding the risks.",
@@ -12,7 +13,7 @@ const COURSE_GUIDES = {
       level: "Topic overview",
       creator: "Grow with Google",
       url: "https://www.youtube.com/watch?v=_DVVNOGYtmU",
-      thumbnail: "/thumbnails/_DVVNOGYtmU.jpg",
+      thumbnail: "/thumbnails/cyber-basics.svg",
       topic: "An introduction to cybersecurity, risks, and security controls.",
       source: "https://www.youtube.com/watch?v=_DVVNOGYtmU"
     },
@@ -21,7 +22,7 @@ const COURSE_GUIDES = {
         title: "Cybersecurity: Crash Course Computer Science #31",
         creator: "CrashCourse · PBS Digital Studios",
         url: "https://www.youtube.com/watch?v=bPVaOlJ6ln0",
-        thumbnail: "/thumbnails/bPVaOlJ6ln0.jpg",
+        thumbnail: "/thumbnails/security-concepts.svg",
         topic: "Understand what security protects and how passwords, access privileges, and two-factor authentication help protect information.",
         source: "https://thecrashcourse.com/courses/cybersecurity-crash-course-computer-science-31/",
         level: "Start here"
@@ -30,7 +31,7 @@ const COURSE_GUIDES = {
         title: "How to Choose a Password - Computerphile",
         creator: "Computerphile · Dr Mike Pound",
         url: "https://www.youtube.com/watch?v=3NjQ9b3pgIg",
-        thumbnail: "/thumbnails/3NjQ9b3pgIg.jpg",
+        thumbnail: "/thumbnails/choosing-passwords.svg",
         topic: "Explore why password length and predictability matter when choosing a password for a learner account.",
         source: "https://www.youtube.com/watch?v=3NjQ9b3pgIg",
         level: "Account security"
@@ -39,7 +40,7 @@ const COURSE_GUIDES = {
         title: "How Password Managers Work - Computerphile",
         creator: "Computerphile · Dr Mike Pound",
         url: "https://www.youtube.com/watch?v=w68BBPDAWr8",
-        thumbnail: "/thumbnails/w68BBPDAWr8.jpg",
+        thumbnail: "/thumbnails/password-managers.svg",
         topic: "Learn how password managers support using a different strong password for each account.",
         source: "https://www.youtube.com/watch?v=w68BBPDAWr8",
         level: "Everyday practice"
@@ -57,7 +58,7 @@ const COURSE_GUIDES = {
       level: "Full beginner course",
       creator: "freeCodeCamp.org · Mike Dane",
       url: "https://www.youtube.com/watch?v=HXV3zeQKqGY",
-      thumbnail: "/thumbnails/HXV3zeQKqGY.jpg",
+      thumbnail: "/thumbnails/sql-first-queries.svg",
       topic: "A beginner course covering databases, SQL queries, keys, and joins.",
       source: "https://www.freecodecamp.org/news/sql-and-databases-full-course/"
     },
@@ -66,7 +67,7 @@ const COURSE_GUIDES = {
         title: "Database Design Course - Learn how to design and plan a database for beginners",
         creator: "freeCodeCamp.org · Caleb Curry",
         url: "https://www.youtube.com/watch?v=ztHopE5Wnpc",
-        thumbnail: "/thumbnails/ztHopE5Wnpc.jpg",
+        thumbnail: "/thumbnails/database-design.svg",
         topic: "Learn how to plan a database, connect related tables, and make design decisions before building your application.",
         source: "https://www.freecodecamp.org/news/database-design-course-for-beginners",
         level: "Database foundations"
@@ -75,7 +76,7 @@ const COURSE_GUIDES = {
         title: "Relational Database Design - Full Course",
         creator: "freeCodeCamp.org",
         url: "https://www.youtube.com/watch?v=26ls5lNiijk",
-        thumbnail: "/thumbnails/26ls5lNiijk.jpg",
+        thumbnail: "/thumbnails/relational-design.svg",
         topic: "Explore relationships, keys, normalisation, and constraints to organise users, subscriptions, and progress records more clearly.",
         source: "https://www.freecodecamp.org/news/learn-relational-database-design",
         level: "Further study"
@@ -84,7 +85,7 @@ const COURSE_GUIDES = {
         title: "MySQL Database - Full Course",
         creator: "freeCodeCamp.org · Bharath Ram Manoharan",
         url: "https://www.youtube.com/watch?v=ER8oKX5myE0",
-        thumbnail: "/thumbnails/ER8oKX5myE0.jpg",
+        thumbnail: "/thumbnails/sql-in-practice.svg",
         topic: "Practise creating tables, working with records, and joining related data. Continue into indexes and transactions when you are ready.",
         source: "https://www.freecodecamp.org/news/learn-to-use-the-mysql-database",
         level: "SQL practice"
@@ -102,7 +103,7 @@ const COURSE_GUIDES = {
       level: "API security",
       creator: "freeCodeCamp.org · APIsec University",
       url: "https://www.youtube.com/watch?v=YYe0FdfdgDU",
-      thumbnail: "/thumbnails/YYe0FdfdgDU.jpg",
+      thumbnail: "/thumbnails/api-security.svg",
       topic: "Corey Ball introduces the OWASP API Security Top 10, 2023 edition. Best after basic web development.",
       source: "https://www.freecodecamp.org/news/owasp-api-security-top-10-secure-your-apis"
     },
@@ -111,7 +112,7 @@ const COURSE_GUIDES = {
         title: "Learn HTML & CSS - Full Course for Beginners",
         creator: "freeCodeCamp.org",
         url: "https://www.youtube.com/watch?v=a_iQb1lnAEQ",
-        thumbnail: "/thumbnails/a_iQb1lnAEQ.jpg",
+        thumbnail: "/thumbnails/html-css-basics.svg",
         topic: "Learn webpage structure and styling before moving on to secure application design. Build your understanding of forms, layouts, and page elements.",
         source: "https://www.youtube.com/watch?v=a_iQb1lnAEQ",
         level: "Frontend foundations"
@@ -120,7 +121,7 @@ const COURSE_GUIDES = {
         title: "JavaScript Programming - Full Course",
         creator: "freeCodeCamp.org · Per Borgen",
         url: "https://www.youtube.com/watch?v=jS4aFq5-91M",
-        thumbnail: "/thumbnails/jS4aFq5-91M.jpg",
+        thumbnail: "/thumbnails/javascript-basics.svg",
         topic: "Learn variables, functions, DOM updates, and user interaction through small projects. Apply these foundations to interactive website features.",
         source: "https://www.freecodecamp.org/news/full-javascript-course-for-beginners",
         level: "Frontend practice"
@@ -129,7 +130,7 @@ const COURSE_GUIDES = {
         title: "User Authentication in Web Apps (Passport.js, Node, Express)",
         creator: "freeCodeCamp.org · Zach Gollwitzer",
         url: "https://www.youtube.com/watch?v=F-sFp_AvHc8",
-        thumbnail: "/thumbnails/F-sFp_AvHc8.jpg",
+        thumbnail: "/thumbnails/web-authentication.svg",
         topic: "Study login forms, cookies, sessions, and JWT authentication with Node and Express examples. Explore how applications keep track of signed-in users.",
         source: "https://www.freecodecamp.org/news/learn-to-implement-user-authentication-in-node-apps-using-passport-js",
         level: "Authentication practice"

@@ -208,6 +208,9 @@ def record_audit(connection: sqlite3.Connection, user_id: int | None, event_type
     )
 
 
+SUBSCRIPTION_PERIOD_DAYS = 30
+
+
 def active_subscription(connection: sqlite3.Connection, user_id: int) -> sqlite3.Row | None:
     return connection.execute(
         """
@@ -234,6 +237,21 @@ def learner_visible(item: dict | sqlite3.Row) -> bool:
         and item["language"] != "id"
         and bool(quiz and quiz.get("questions"))
     )
+
+
+def course_completion(connection: sqlite3.Connection, user_id: int, item_id: int, progress_percent: int) -> dict:
+    """Single completion rule used by the dashboard counter and the progress endpoint.
+
+    A course with assessments is complete only when every assessment is passed.
+    The self-reported progress slider cannot complete an assessed course on its own.
+    A course without assessments is complete at 100% progress.
+    """
+    status = assessments.completion(connection, user_id, item_id)
+    if status["total_assessments"]:
+        completed = status["completed"]
+    else:
+        completed = progress_percent >= 100
+    return {**status, "completed": completed}
 
 
 def has_entitlement(connection: sqlite3.Connection, user_id: int, item_id: int) -> bool:
@@ -549,7 +567,8 @@ class EduStreamHandler(BaseHTTPRequestHandler):
                 for item in items:
                     item["has_quiz"] = item["id"] in QUIZZES
                     item["quiz_question_count"] = sum(entry["question_count"] for entry in assessments.definitions(item["id"]))
-                    assessment_status = assessments.completion(connection, user["id"], item["id"])
+                    assessment_status = course_completion(connection, user["id"], item["id"], item["progress_percent"])
+                    item["completed"] = assessment_status["completed"]
                     item["assessment_completed"] = assessment_status["completed"]
                     item["assessments_passed"] = assessment_status["passed_count"]
                     item["assessment_count"] = assessment_status["total_assessments"]
@@ -571,7 +590,7 @@ class EduStreamHandler(BaseHTTPRequestHandler):
                     "payments": payments,
                     "stats": {
                         "available": len(entitled),
-                        "completed": sum(1 for item in entitled if item["assessment_completed"]),
+                        "completed": sum(1 for item in entitled if item["completed"]),
                         "average_progress": average_progress,
                         "locked": sum(1 for item in items if not item["entitled"]),
                     },
@@ -784,37 +803,88 @@ class EduStreamHandler(BaseHTTPRequestHandler):
             )
             record_audit(connection, user["id"], "progress_updated", f"Learning item {item_id}: {progress}%")
             connection.commit()
-        self._json({"ok": True, "message": "Progress updated.", "progress": progress})
+            status = course_completion(connection, user["id"], item_id, progress)
+        if status["completed"]:
+            message = "Course completed. Well done!"
+        elif progress == 100 and status["total_assessments"]:
+            remaining = status["total_assessments"] - status["passed_count"]
+            message = (
+                f"Progress saved at 100%. Pass the remaining {remaining} "
+                f"assessment{'s' if remaining != 1 else ''} to complete this course."
+            )
+        else:
+            message = f"Your progress is saved at {progress}%."
+        self._json({
+            "ok": True,
+            "message": message,
+            "progress": progress,
+            "completed": status["completed"],
+            "assessments_passed": status["passed_count"],
+            "assessment_count": status["total_assessments"],
+        })
 
     def _change_subscription(self, user: dict, body: dict) -> None:
+        """Quote a plan change or renewal, and charge only when the learner confirms it.
+
+        Without "confirm": true the endpoint returns a quote and records nothing.
+        Paid days are kept: the new 30-day period starts from the current end date
+        when the active subscription has not yet expired, otherwise from today.
+        """
         try:
             plan_id = int(body.get("plan_id"))
         except (TypeError, ValueError):
             raise ValueError("Select a valid subscription plan.")
+        confirmed = body.get("confirm") is True
         with connect_db() as connection:
             plan = connection.execute("SELECT * FROM plans WHERE id = ?", (plan_id,)).fetchone()
             if not plan:
                 raise ValueError("The selected subscription plan does not exist.")
+            current = active_subscription(connection, user["id"])
+            today = utc_now().date()
+            current_end = datetime.fromisoformat(current["end_date"]).date() if current else None
+            period_start = max(today, current_end) if current_end else today
+            new_end = period_start + timedelta(days=SUBSCRIPTION_PERIOD_DAYS)
+            action = "renew" if current and current["plan_id"] == plan_id else ("change" if current else "subscribe")
+            quote = {
+                "action": action,
+                "plan_id": plan["id"],
+                "plan_name": plan["name"],
+                "amount": plan["price_monthly"],
+                "current_plan_name": current["plan_name"] if current else None,
+                "current_end_date": current_end.isoformat() if current_end else None,
+                "new_end_date": new_end.isoformat(),
+                "days_kept": (current_end - today).days if current_end and current_end > today else 0,
+            }
+            if not confirmed:
+                self._json({"ok": True, "requires_confirmation": True, "quote": quote})
+                return
             connection.execute(
                 "UPDATE subscriptions SET status = 'cancelled' WHERE user_id = ? AND status = 'active'",
                 (user["id"],),
             )
-            start_date = utc_now().date()
-            end_date = start_date + timedelta(days=30)
             cursor = connection.execute(
                 """
                 INSERT INTO subscriptions (user_id, plan_id, status, start_date, end_date, created_at)
                 VALUES (?, ?, 'active', ?, ?, ?)
                 """,
-                (user["id"], plan_id, start_date.isoformat(), end_date.isoformat(), iso_now()),
+                (user["id"], plan_id, today.isoformat(), new_end.isoformat(), iso_now()),
             )
             connection.execute(
                 "INSERT INTO payments (user_id, subscription_id, amount, status, paid_at) VALUES (?, ?, ?, 'paid', ?)",
                 (user["id"], cursor.lastrowid, plan["price_monthly"], iso_now()),
             )
-            record_audit(connection, user["id"], "subscription_changed", f"Plan changed to {plan['name']}")
+            verb = "renewed" if action == "renew" else "changed to"
+            record_audit(
+                connection, user["id"], "subscription_changed",
+                f"Plan {verb} {plan['name']}; access ends {new_end.isoformat()}",
+            )
             connection.commit()
-        self._json({"ok": True, "message": f"Your {plan['name']} plan is now active."})
+        message = (
+            f"Your {plan['name']} plan is renewed until {new_end.isoformat()}."
+            if action == "renew"
+            else f"Your {plan['name']} plan is now active until {new_end.isoformat()}."
+        )
+        self._json({"ok": True, "message": message, "quote": quote})
 
     def _create_content(self, user: dict, body: dict) -> None:
         title = str(body.get("title", "")).strip()

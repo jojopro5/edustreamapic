@@ -76,7 +76,7 @@ class AssessmentApiTests(unittest.TestCase):
     def plus(self, client):
         plans = self.request(client, "/api/dashboard")["plans"]
         plan = next(plan for plan in plans if plan["code"] == "plus")
-        self.request(client, "/api/subscription", "POST", {"plan_id": plan["id"]})
+        self.request(client, "/api/subscription", "POST", {"plan_id": plan["id"], "confirm": True})
 
     def start(self, client, item_id=1, assessment_id="module-1"):
         return self.request(client, f"/api/assessments/{item_id}/start", "POST", {

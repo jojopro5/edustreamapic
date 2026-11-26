@@ -82,7 +82,7 @@ class EduStreamApiTests(unittest.TestCase):
         self.request(client, f"/api/access/{locked['id']}", expected=403)
 
         plus = next(plan for plan in dashboard["plans"] if plan["code"] == "plus")
-        changed = self.request(client, "/api/subscription", "POST", {"plan_id": plus["id"]})
+        changed = self.request(client, "/api/subscription", "POST", {"plan_id": plus["id"], "confirm": True})
         self.assertIn("Plus", changed["message"])
         allowed = self.request(client, f"/api/access/{locked['id']}")
         self.assertEqual(allowed["item"]["id"], locked["id"])
@@ -263,12 +263,12 @@ class EduStreamApiTests(unittest.TestCase):
         plans = self.request(learner, "/api/dashboard")["plans"]
         starter = next(plan for plan in plans if plan["code"] == "starter")
         plus = next(plan for plan in plans if plan["code"] == "plus")
-        self.request(learner, "/api/subscription", "POST", {"plan_id": starter["id"]})
+        self.request(learner, "/api/subscription", "POST", {"plan_id": starter["id"], "confirm": True})
         sql_quiz = self.request(learner, "/api/quiz/2")["quiz"]
         self.assertEqual(sql_quiz["item_id"], 2)
         self.request(learner, "/api/quiz/3", expected=403)
         self.request(learner, "/api/quiz/3/submit", "POST", {"answers": {}}, expected=403)
-        self.request(learner, "/api/subscription", "POST", {"plan_id": plus["id"]})
+        self.request(learner, "/api/subscription", "POST", {"plan_id": plus["id"], "confirm": True})
         for item_id in (2, 3):
             with self.subTest(item_id=item_id):
                 quiz = self.request(learner, f"/api/quiz/{item_id}")["quiz"]
@@ -288,7 +288,7 @@ class EduStreamApiTests(unittest.TestCase):
         learner = self.login("learner")
         dashboard = self.request(learner, "/api/dashboard")
         plus = next(plan for plan in dashboard["plans"] if plan["code"] == "plus")
-        self.request(learner, "/api/subscription", "POST", {"plan_id": plus["id"]})
+        self.request(learner, "/api/subscription", "POST", {"plan_id": plus["id"], "confirm": True})
         with server.connect_db() as connection:
             before = [tuple(row) for row in connection.execute("SELECT * FROM progress ORDER BY user_id, learning_item_id")]
             connection.execute("UPDATE learning_items SET status = 'approved' WHERE id = 4")
@@ -328,7 +328,7 @@ class EduStreamApiTests(unittest.TestCase):
             self.assertEqual([item["id"] for item in dashboard["items"]], [2, 3])
             entitled = [item for item in dashboard["items"] if item["entitled"]]
             self.assertEqual(dashboard["stats"]["available"], len(entitled))
-            self.assertEqual(dashboard["stats"]["completed"], sum(item["progress_percent"] == 100 for item in entitled))
+            self.assertEqual(dashboard["stats"]["completed"], sum(bool(item["completed"]) for item in entitled))
             self.assertEqual(dashboard["stats"]["average_progress"], round(sum(item["progress_percent"] for item in entitled) / len(entitled)))
             self.request(learner, "/api/access/1", expected=403)
             self.request(learner, "/api/progress", "POST", {"item_id": 1, "progress": 100}, expected=403)
@@ -378,7 +378,7 @@ class EduStreamApiTests(unittest.TestCase):
             entitled = [item for item in dashboard["items"] if item["entitled"]]
             self.assertFalse(any(item["id"] == 4 for item in dashboard["items"]))
             self.assertEqual(dashboard["stats"]["average_progress"], round(sum(item["progress_percent"] for item in entitled) / len(entitled)))
-            self.assertEqual(dashboard["stats"]["completed"], sum(item["progress_percent"] == 100 for item in entitled))
+            self.assertEqual(dashboard["stats"]["completed"], sum(bool(item["completed"]) for item in entitled))
         finally:
             with server.connect_db() as connection:
                 connection.execute("DELETE FROM progress WHERE user_id = ? AND learning_item_id = 4", (learner_id,))

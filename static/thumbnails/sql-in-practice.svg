@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720" role="img" aria-label="SQL in practice">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2c1856"/>
+      <stop offset="1" stop-color="#6a44b8"/>
+    </linearGradient>
+  </defs>
+  <rect width="1280" height="720" fill="url(#bg)"/>
+  <rect x="922" y="409" width="106" height="106" rx="18" fill="#cdb8f5" opacity="0.23" transform="rotate(9 922 409)"/>
+  <circle cx="920" cy="539" r="81" fill="none" stroke="#cdb8f5" stroke-width="10" opacity="0.08"/>
+  <rect x="817" y="487" width="61" height="61" rx="18" fill="#cdb8f5" opacity="0.16" transform="rotate(10 817 487)"/>
+  <circle cx="902" cy="243" r="105" fill="none" stroke="#cdb8f5" stroke-width="10" opacity="0.11"/>
+  <rect x="720" y="544" width="67" height="67" rx="18" fill="#cdb8f5" opacity="0.20" transform="rotate(6 720 544)"/>
+  <circle cx="1250" cy="495" r="166" fill="none" stroke="#cdb8f5" stroke-width="10" opacity="0.18"/>
+  <text x="96" y="92" fill="#cdb8f5" font-family="Arial, Helvetica, sans-serif" font-size="34" font-weight="700" letter-spacing="6">PRACTICE</text>
+  <text x="96" y="178" fill="#ffffff" font-family="Arial, Helvetica, sans-serif" font-size="84" font-weight="800"><tspan x="96" dy="0">SQL in</tspan><tspan x="96" dy="92">practice</tspan></text>
+  <rect x="96" y="560" width="300" height="60" rx="12" fill="#ffffff" opacity="0.14"/>
+  <text x="120" y="601" fill="#ffffff" font-family="Arial, Helvetica, sans-serif" font-size="28" font-weight="700">EduStream study clip</text>
+</svg>
