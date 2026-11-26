@@ -79,6 +79,7 @@ const NAV = {
   educator: [["overview", "home", "Overview"], ["studio", "plus", "Content studio"], ["content", "layers", "My content"]],
   admin: [["overview", "home", "Overview"], ["approvals", "shield", "Approval queue"], ["feedback", "users", "Learner feedback"], ["audit", "audit", "Audit reports"]]
 };
+NAV.admin.splice(1, 0, ["operations", "trend", "Operations"]);
 NAV.admin.push(["backups", "layers", "Backup & recovery"]);
 for (const role of Object.keys(NAV)) NAV[role].push(["profile", "users", "My profile"]);
 function setupShell() {
@@ -164,6 +165,7 @@ function render() {
     admin: { overview: adminOverview, approvals: adminApprovals, feedback: adminFeedback, audit: adminAuditSearch }
   };
   views.admin.backups = adminBackups;
+  views.admin.operations = adminOperations;
   for (const role of Object.keys(views)) views[role].profile = profileView;
   $("#app-content").innerHTML = (views[state.user.role][state.view] || views[state.user.role].overview)();
   if ($("#moderation-list")) renderModerationList($("#moderation-list"), state.dashboard.feedback || [], message => loadDashboard(message));
@@ -171,6 +173,8 @@ function render() {
   if ($("#backup-list")) bindBackupView();
   if ($("#audit-filters")) bindAuditSearch();
   if ($("#profile-form")) bindProfileView();
+  if ($("#ops-issues")) bindOperations();
+  if ($("#published-panel")) renderPublishedList($("#published-panel"), state.dashboard.published_items || []);
 }
 function learnerOverview() {
   setPage("Overview", "Learner workspace");
@@ -327,7 +331,7 @@ function adminOverview() {
 }
 function adminApprovals() {
   setPage("Approval queue", "Administrator workspace");
-  return hero("CONTENT REVIEW", "Good learning begins with a review.", "Read the resource details before deciding whether it is ready for learners.") + '<section class="panel"><div class="panel-header"><div><h2>Pending resources</h2><p>' + state.dashboard.pending_items.length + (state.dashboard.pending_items.length === 1 ? ' item needs' : ' items need') + ' a publication decision</p></div>' + statusBadge("pending") + '</div>' + approvalList(state.dashboard.pending_items) + '</section>';
+  return hero("CONTENT REVIEW", "Good learning begins with a review.", "Read the resource details before deciding whether it is ready for learners.") + '<section class="panel"><div class="panel-header"><div><h2>Pending resources</h2><p>' + state.dashboard.pending_items.length + (state.dashboard.pending_items.length === 1 ? ' item needs' : ' items need') + ' a publication decision</p></div>' + statusBadge("pending") + '</div>' + approvalList(state.dashboard.pending_items) + '</section><section id="published-panel" class="panel published-panel" aria-label="Published resources"></section>';
 }
 function approvalList(items) {
   if (!items.length) return emptyState("You're all caught up", "New educator submissions will appear here for your review.", "shield");
@@ -437,6 +441,7 @@ function showPlanConfirmation(quote) {
     ? "Your " + quote.days_kept + " remaining paid " + (quote.days_kept === 1 ? "day is" : "days are") + " kept: the 30 new days are added after your current end date. Demo billing only, no money is charged."
     : "Demo billing only, no money is charged.";
   $("#plan-dialog-error").textContent = "";
+  $("#plan-dialog-method").value = "test-card-approve";
   $("#plan-dialog").showModal();
   $("#plan-dialog-cancel").focus();
 }
@@ -446,7 +451,7 @@ async function confirmPlan(button) {
   setLoading(button, true, "Confirming…");
   $("#plan-dialog-error").textContent = "";
   try {
-    const data = await api("/api/subscription", { method: "POST", body: JSON.stringify({ plan_id: quote.plan_id, confirm: true }) });
+    const data = await api("/api/subscription", { method: "POST", body: JSON.stringify({ plan_id: quote.plan_id, confirm: true, payment_method: $("#plan-dialog-method").value }) });
     state.pendingPlan = null;
     $("#plan-dialog").close();
     await loadDashboard(data.message);

@@ -28,6 +28,7 @@ from quizzes import QUIZZES, public_quiz
 import backups
 import assessments
 import feedback
+import operations
 
 
 ROOT = Path(__file__).resolve().parent
@@ -53,6 +54,8 @@ CORRELATION_ID: contextvars.ContextVar[str | None] = contextvars.ContextVar("cor
 REQUEST_ID_PATTERN = re.compile(r"[A-Za-z0-9_-]{8,64}")
 AUDIT_OUTCOMES = ("success", "failure", "denied")
 REGISTRATION_THROTTLE = accounts.RegistrationThrottle()
+# Fictitious payment methods for the billing simulation. No card data is ever accepted.
+SIMULATED_PAYMENT_METHODS = ("test-card-approve", "test-card-decline")
 
 
 class ClosingConnection(sqlite3.Connection):
@@ -594,6 +597,14 @@ class EduStreamHandler(BaseHTTPRequestHandler):
                     self._error(str(exc), HTTPStatus.BAD_REQUEST)
             return
 
+        if path == "/api/admin/operations":
+            user = self._require_user({"admin"})
+            if user:
+                with connect_db() as connection:
+                    payload = operations.summary(connection)
+                self._json({"ok": True, **payload})
+            return
+
         if path == "/api/profile":
             user = self._require_user()
             if user:
@@ -789,6 +800,12 @@ class EduStreamHandler(BaseHTTPRequestHandler):
                 user = self._require_user({"learner"})
                 if user:
                     self._submit_quiz(user, int(match.group(1)), self._body())
+                return
+            match = re.fullmatch(r"/api/admin/content/(\d+)/takedown", path)
+            if match:
+                user = self._require_user({"admin"})
+                if user:
+                    self._take_down_content(user, int(match.group(1)), self._body())
                 return
             match = re.fullmatch(r"/api/admin/content/(\d+)/review", path)
             if match:
@@ -1031,6 +1048,16 @@ class EduStreamHandler(BaseHTTPRequestHandler):
             ]
             for item in pending_items:
                 item["attachment"] = uploads.public_info(uploads.file_record(connection, item["id"]))
+            published_items = [
+                dict(row)
+                for row in connection.execute(
+                    """
+                    SELECT li.id, li.title, li.category, li.created_at, u.full_name AS educator_name
+                    FROM learning_items li JOIN users u ON u.id = li.created_by
+                    WHERE li.status = 'approved' ORDER BY li.id DESC
+                    """
+                )
+            ]
             audit = [
                 dict(row)
                 for row in connection.execute(
@@ -1057,6 +1084,7 @@ class EduStreamHandler(BaseHTTPRequestHandler):
                 "role": "admin",
                 "user": user,
                 "pending_items": pending_items,
+                "published_items": published_items,
                 "audit": audit,
                 "feedback": feedback.admin_list(connection),
                 "plans": plans,
@@ -1398,6 +1426,9 @@ class EduStreamHandler(BaseHTTPRequestHandler):
         except (TypeError, ValueError):
             raise ValueError("Select a valid subscription plan.")
         confirmed = body.get("confirm") is True
+        payment_method = body.get("payment_method", "test-card-approve")
+        if payment_method not in SIMULATED_PAYMENT_METHODS:
+            raise ValueError("Choose one of the simulated test cards.")
         with connect_db() as connection:
             plan = connection.execute("SELECT * FROM plans WHERE id = ?", (plan_id,)).fetchone()
             if not plan:
@@ -1422,6 +1453,26 @@ class EduStreamHandler(BaseHTTPRequestHandler):
             }
             if not confirmed:
                 self._json({"ok": True, "requires_confirmation": True, "quote": quote})
+                return
+            if payment_method == "test-card-decline":
+                # Record the failed attempt against a subscription row that never
+                # became active; the learner's current plan is left untouched.
+                cursor = connection.execute(
+                    """
+                    INSERT INTO subscriptions (user_id, plan_id, status, start_date, end_date, created_at)
+                    VALUES (?, ?, 'cancelled', ?, ?, ?)
+                    """,
+                    (user["id"], plan_id, today.isoformat(), today.isoformat(), iso_now()),
+                )
+                connection.execute(
+                    "INSERT INTO payments (user_id, subscription_id, amount, status, paid_at) VALUES (?, ?, ?, 'failed', ?)",
+                    (user["id"], cursor.lastrowid, plan["price_monthly"], iso_now()),
+                )
+                record_audit(connection, user["id"], "payment_failed",
+                             f"Simulated card declined for {plan['name']} ({action}); plan unchanged")
+                connection.commit()
+                self._json({"ok": False, "error": "The simulated card was declined. Your plan has not changed.", "quote": quote},
+                           HTTPStatus.PAYMENT_REQUIRED)
                 return
             connection.execute(
                 "UPDATE subscriptions SET status = 'cancelled' WHERE user_id = ? AND status = 'active'",
@@ -1494,17 +1545,39 @@ class EduStreamHandler(BaseHTTPRequestHandler):
         decision = str(body.get("decision", "")).lower()
         if decision not in {"approved", "rejected"}:
             raise ValueError("Decision must be approved or rejected.")
+        note = str(body.get("note", "")).strip()[:300]
         with connect_db() as connection:
-            item = connection.execute("SELECT id, title FROM learning_items WHERE id = ?", (item_id,)).fetchone()
+            item = connection.execute("SELECT id, title, status FROM learning_items WHERE id = ?", (item_id,)).fetchone()
             if not item:
                 self._error("Learning item was not found.", HTTPStatus.NOT_FOUND)
                 return
             connection.execute("UPDATE learning_items SET status = ? WHERE id = ?", (decision, item_id))
             if decision == "approved":
                 grant_default_entitlements(connection, item_id)
-            record_audit(connection, user["id"], "content_reviewed", f"{item['title']}: {decision}")
+            record_audit(connection, user["id"], "content_reviewed",
+                         f"Learning item {item_id} ({item['title']}): {item['status']} -> {decision}" + (f"; note: {note}" if note else ""))
             connection.commit()
         self._json({"ok": True, "message": f"Content {decision}."})
+
+    def _take_down_content(self, user: dict, item_id: int, body: dict) -> None:
+        """Unpublish an approved item with a recorded reason (moderation, T2/T4)."""
+        reason = body.get("reason")
+        if not isinstance(reason, str) or not 5 <= len(reason.strip()) <= 300:
+            raise ValueError("Give a reason of 5 to 300 characters for taking this item down.")
+        reason = " ".join(reason.split())
+        with connect_db() as connection:
+            item = connection.execute("SELECT id, title, status FROM learning_items WHERE id = ?", (item_id,)).fetchone()
+            if not item:
+                self._error("Learning item was not found.", HTTPStatus.NOT_FOUND)
+                return
+            if item["status"] != "approved":
+                self._error("Only published items can be taken down.", HTTPStatus.CONFLICT)
+                return
+            connection.execute("UPDATE learning_items SET status = 'rejected' WHERE id = ?", (item_id,))
+            record_audit(connection, user["id"], "content_taken_down",
+                         f"Learning item {item_id} ({item['title']}): approved -> rejected; reason: {reason}")
+            connection.commit()
+        self._json({"ok": True, "message": "Item taken down. Learners can no longer see or open it."})
 
     def _create_backup(self, user: dict) -> None:
         ref = CORRELATION_ID.get() or secrets.token_hex(4)

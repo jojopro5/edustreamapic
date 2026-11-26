@@ -19,3 +19,11 @@
 .ops-issue .button { margin-top: 8px; }
 .ops-ok { padding: 18px 24px; color: #46987c; font-size: .875rem; }
 @media (max-width: 900px) { .audit-filters { grid-template-columns: minmax(0, 1fr); } .ops-grid { grid-template-columns: minmax(0, 1fr); } .audit-row { grid-template-columns: auto minmax(0, 1fr); } .audit-row .audit-user, .audit-row time { grid-column: 2; text-align: left; } }
+.ops-courses { margin-top: 20px; }
+.takedown-controls { display: flex; gap: 8px; margin-top: 8px; }
+.takedown-controls input { min-height: 38px; padding: 7px 10px; }
+.published-panel { margin-top: 20px; }
+.ops-issue > .badge { align-self: start; margin-top: 2px; }
+.takedown-controls { align-items: center; }
+.takedown-controls input { flex: 1; min-width: 0; height: 40px; min-height: 40px; }
+.takedown-controls .button { white-space: nowrap; flex: 0 0 auto; }
