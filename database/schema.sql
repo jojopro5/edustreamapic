@@ -78,6 +78,26 @@ CREATE TABLE IF NOT EXISTS progress (
     FOREIGN KEY (learning_item_id) REFERENCES learning_items(id) ON DELETE CASCADE
 );
 
+-- Learner feedback on a course. Stored as plain text and always rendered as
+-- text. 'hidden' keeps a moderated comment for the record without showing it.
+CREATE TABLE IF NOT EXISTS feedback (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    learning_item_id INTEGER NOT NULL REFERENCES learning_items(id) ON DELETE CASCADE,
+    body TEXT NOT NULL CHECK (length(body) BETWEEN 2 AND 500),
+    status TEXT NOT NULL DEFAULT 'visible' CHECK (status IN ('visible', 'hidden')),
+    created_at TEXT NOT NULL,
+    edited_at TEXT,
+    moderated_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    moderated_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_feedback_item
+    ON feedback(learning_item_id, status, id DESC);
+
+CREATE INDEX IF NOT EXISTS idx_feedback_user_created
+    ON feedback(user_id, created_at);
+
 CREATE TABLE IF NOT EXISTS payments (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL,

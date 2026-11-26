@@ -23,6 +23,7 @@ import uploads
 from quizzes import QUIZZES, public_quiz
 import backups
 import assessments
+import feedback
 
 
 ROOT = Path(__file__).resolve().parent
@@ -514,6 +515,13 @@ class EduStreamHandler(BaseHTTPRequestHandler):
             self._json({"ok": True, **self._dashboard(user)})
             return
 
+        match = re.fullmatch(r"/api/feedback/(\d+)", path)
+        if match:
+            user = self._require_user({"learner"})
+            if user:
+                self._feedback_request(user, "list", item_id=int(match.group(1)))
+            return
+
         match = re.fullmatch(r"/api/assessments/(\d+)", path)
         if match:
             user = self._require_user({"learner"})
@@ -606,6 +614,24 @@ class EduStreamHandler(BaseHTTPRequestHandler):
                 user = self._require_user({"educator", "admin"})
                 if user:
                     self._create_content(user, self._body())
+                return
+            match = re.fullmatch(r"/api/feedback/(\d+)", path)
+            if match:
+                user = self._require_user({"learner"})
+                if user:
+                    self._feedback_request(user, "create", item_id=int(match.group(1)), body=self._body())
+                return
+            match = re.fullmatch(r"/api/feedback-entries/(\d+)/(edit|delete)", path)
+            if match:
+                user = self._require_user({"learner"})
+                if user:
+                    self._feedback_request(user, match.group(2), feedback_id=int(match.group(1)), body=self._body())
+                return
+            match = re.fullmatch(r"/api/admin/feedback/(\d+)/moderate", path)
+            if match:
+                user = self._require_user({"admin"})
+                if user:
+                    self._feedback_request(user, "moderate", feedback_id=int(match.group(1)), body=self._body())
                 return
             match = re.fullmatch(r"/api/assessments/(\d+)/start", path)
             if match:
@@ -806,6 +832,7 @@ class EduStreamHandler(BaseHTTPRequestHandler):
                 "user": user,
                 "pending_items": pending_items,
                 "audit": audit,
+                "feedback": feedback.admin_list(connection),
                 "plans": plans,
                 "stats": {
                     "learners": counts.get("learner", 0),
@@ -841,6 +868,48 @@ class EduStreamHandler(BaseHTTPRequestHandler):
                     payload = {"attempt": assessments.public_attempt(connection, row)}
             self._json({"ok": True, **payload})
         except assessments.AssessmentError as error:
+            self._error(str(error), error.status)
+
+    def _feedback_request(self, user: dict, action: str, item_id: int | None = None,
+                          feedback_id: int | None = None, body: dict | None = None) -> None:
+        body = body or {}
+        try:
+            with connect_db() as connection:
+                if action == "moderate":
+                    status = feedback.moderate(connection, user["id"], feedback_id, body)
+                    record_audit(connection, user["id"], "feedback_moderated", f"Feedback {feedback_id}: {status}")
+                    connection.commit()
+                    self._json({"ok": True, "message": "Feedback hidden." if status == "hidden" else "Feedback restored.", "status": status})
+                    return
+                if feedback_id is not None:
+                    item_id = feedback.get_owned(connection, user["id"], feedback_id)["learning_item_id"]
+                if not has_entitlement(connection, user["id"], item_id):
+                    record_audit(connection, user["id"], "feedback_access_denied", f"Learning item {item_id}")
+                    connection.commit()
+                    raise feedback.FeedbackError("An active subscription that includes this course is required.", 403)
+                if action == "list":
+                    payload = {"feedback": feedback.list_for_item(connection, user["id"], item_id)}
+                elif action == "create":
+                    try:
+                        entry = feedback.create(connection, user["id"], item_id, body)
+                    except feedback.FeedbackError as error:
+                        if error.status == 429:
+                            record_audit(connection, user["id"], "feedback_rate_limited", f"Learning item {item_id}")
+                            connection.commit()
+                        raise
+                    record_audit(connection, user["id"], "feedback_posted", f"Feedback {entry['id']} on learning item {item_id}")
+                    payload = {"feedback": entry, "message": "Thanks, your feedback is posted."}
+                elif action == "edit":
+                    entry = feedback.edit(connection, user["id"], feedback_id, body)
+                    record_audit(connection, user["id"], "feedback_edited", f"Feedback {feedback_id}")
+                    payload = {"feedback": entry, "message": "Feedback updated."}
+                else:
+                    feedback.delete(connection, user["id"], feedback_id)
+                    record_audit(connection, user["id"], "feedback_deleted", f"Feedback {feedback_id}")
+                    payload = {"message": "Feedback deleted."}
+                connection.commit()
+            self._json({"ok": True, **payload})
+        except feedback.FeedbackError as error:
             self._error(str(error), error.status)
 
     def _quiz_for_user(self, connection: sqlite3.Connection, user: dict, item_id: int) -> dict | None:

@@ -1,0 +1,20 @@
+.feedback-section { margin-top: 26px; padding-top: 22px; border-top: 1px solid #edf1f7; }
+.feedback-section h3 { margin: 0 0 6px; color: #35577f; font-size: 1.05rem; }
+.feedback-note { margin: 0 0 12px; font-size: .8125rem; line-height: 1.6; }
+.feedback-form textarea, .feedback-edit-form textarea { min-height: 84px; }
+.feedback-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 8px; }
+.feedback-actions .helper { margin: 0; }
+.feedback-list { display: grid; gap: 10px; margin: 16px 0 0; padding: 0; list-style: none; }
+.feedback-item, .moderation-row { padding: 12px 14px; border: 1px solid #edf1f7; border-radius: 10px; background: #fafcff; }
+.feedback-meta { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; font-size: .75rem; color: #65758b; }
+.feedback-meta strong { color: #35577f; font-size: .8125rem; }
+.feedback-body { margin: 6px 0 0; color: #3d4f66; font-size: .875rem; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
+.feedback-item-actions { display: flex; gap: 14px; align-items: center; margin-top: 8px; }
+.feedback-item-actions .text-link { font-size: .75rem; }
+.feedback-delete { color: #bd4150; }
+.feedback-empty { color: #65758b; font-size: .8125rem; }
+.moderation-list { display: grid; gap: 10px; padding: 18px 24px 24px; }
+.moderation-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.moderation-details { min-width: 0; flex: 1; }
+.moderation-row.is-hidden { opacity: .7; background: #f6f7f9; }
+@media (max-width: 640px) { .moderation-row { flex-direction: column; } .moderation-list { padding: 14px; } }

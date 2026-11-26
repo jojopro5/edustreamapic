@@ -77,7 +77,7 @@ function setLoading(button, loading, label = "Please wait…") {
 const NAV = {
   learner: [["overview", "home", "Overview"], ["learning", "book", "My learning"], ["library", "library", "Explore courses"], ["subscription", "card", "Subscription & billing"]],
   educator: [["overview", "home", "Overview"], ["studio", "plus", "Content studio"], ["content", "layers", "My content"]],
-  admin: [["overview", "home", "Overview"], ["approvals", "shield", "Approval queue"], ["audit", "audit", "Audit reports"]]
+  admin: [["overview", "home", "Overview"], ["approvals", "shield", "Approval queue"], ["feedback", "users", "Learner feedback"], ["audit", "audit", "Audit reports"]]
 };
 NAV.admin.push(["backups", "layers", "Backup & recovery"]);
 function setupShell() {
@@ -160,10 +160,11 @@ function render() {
   const views = {
     learner: { overview: learnerOverview, learning: learnerLearning, library: learnerLibrary, subject: learnerSubject, subscription: learnerSubscription },
     educator: { overview: educatorOverview, studio: educatorStudio, content: educatorContent },
-    admin: { overview: adminOverview, approvals: adminApprovals, audit: adminAudit }
+    admin: { overview: adminOverview, approvals: adminApprovals, feedback: adminFeedback, audit: adminAudit }
   };
   views.admin.backups = adminBackups;
   $("#app-content").innerHTML = (views[state.user.role][state.view] || views[state.user.role].overview)();
+  if ($("#moderation-list")) renderModerationList($("#moderation-list"), state.dashboard.feedback || [], message => loadDashboard(message));
   bindViewEvents();
   if ($("#backup-list")) bindBackupView();
 }
@@ -328,6 +329,12 @@ function approvalList(items) {
   if (!items.length) return emptyState("You're all caught up", "New educator submissions will appear here for your review.", "shield");
   return '<div class="approval-list">' + items.map(item => '<article class="approval-card"><span class="resource-icon theme-' + courseTheme(item).colour + '">' + icon(courseTheme(item).icon) + '</span><div class="approval-details"><span class="eyebrow">' + escapeHtml(item.category) + '</span><h3>' + escapeHtml(item.title) + '</h3><p>' + escapeHtml(item.description) + '</p><div class="approval-meta"><span>' + icon("users") + escapeHtml(item.educator_name) + '</span><span>' + icon("clock") + item.duration_minutes + ' min · ' + titleCase(item.content_type) + '</span><span>' + (item.language === 'id' ? 'Bahasa Indonesia' : 'English') + '</span><span>Submitted ' + formatDate(item.created_at) + '</span></div>' + (item.attachment ? attachmentLink(item) : '<p class="attachment-none">No file attached</p>') + '</div><div class="approval-actions"><button class="button secondary small" data-review-id="' + item.id + '" data-decision="approved">' + icon("check") + 'Approve</button><button class="button danger small" data-review-id="' + item.id + '" data-decision="rejected">' + icon("close") + 'Reject</button></div></article>').join("") + '</div>';
 }
+function adminFeedback() {
+  setPage("Learner feedback", "Administrator workspace");
+  const entries = state.dashboard.feedback || [];
+  const hidden = entries.filter(entry => entry.status === "hidden").length;
+  return hero("MODERATION", "Keep course discussion useful and safe.", "Hide a comment that breaks the rules. Hidden comments stay here for the record and can be restored.") + '<section class="panel"><div class="panel-header"><div><h2>Recent feedback</h2><p>' + entries.length + ' most recent comments · ' + hidden + ' hidden</p></div></div><div id="moderation-list" class="moderation-list"></div></section>';
+}
 function adminAudit() {
   setPage("Audit reports", "Administrator workspace");
   return hero("PLATFORM ACTIVITY", "A clear record of what happened.", "Follow account access, subscription changes, learning progress, and publication decisions.") + '<section class="panel"><div class="panel-header"><div><h2>Event log</h2><p>The 30 most recent recorded events</p></div><span class="badge neutral">' + state.dashboard.audit.length + ' events</span></div><div class="audit-list">' +
@@ -391,6 +398,7 @@ async function openLesson(itemId, button) {
     $("#progress-slider").value = state.activeItem.progress_percent;
     $("#progress-output").value = $("#progress-slider").value + "%";
     $("#lesson-dialog").showModal();
+    loadFeedback(itemId);
   } catch (error) { toast(error.message, true); }
   finally { setLoading(button, false); }
 }
