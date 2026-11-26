@@ -179,6 +179,31 @@ class AssessmentApiTests(unittest.TestCase):
                     self.assertEqual(module["best_score"], passed["result"]["score"])
                     self.assertEqual(overview["assessments"][-1]["locked"], module_number != 3)
 
+    def test_failed_attempt_hides_answer_key_until_assessment_is_passed(self):
+        learner = self.login()
+        self.plus(learner)
+        first = self.start(learner, 1, "module-1")
+        failed = self.submit(learner, first, correct_count=6)
+        self.assertFalse(failed["result"]["answers_revealed"])
+        wrong = [entry for entry in failed["result"]["feedback"] if not entry["correct"]]
+        self.assertEqual(len(wrong), 2)
+        for entry in wrong:
+            self.assertNotIn("correct_option_id", entry)
+            self.assertNotIn("explanation", entry)
+            self.assertIn("selected_option_id", entry)
+        # Reopening the failed attempt must not leak the key either.
+        reopened = self.request(learner, f"/api/assessment-attempts/{first['id']}")["attempt"]
+        self.assertNotIn("correct_option_id", json.dumps([e for e in reopened["result"]["feedback"] if not e["correct"]]))
+
+        second = self.start(learner, 1, "module-1")
+        passed = self.submit(learner, second, correct_count=8)
+        self.assertTrue(passed["result"]["answers_revealed"])
+        self.assertTrue(all(entry["correct_option_id"] and entry["explanation"] for entry in passed["result"]["feedback"]))
+        # Once passed, earlier attempts can be reviewed in full.
+        reopened = self.request(learner, f"/api/assessment-attempts/{first['id']}")["attempt"]
+        self.assertTrue(reopened["result"]["answers_revealed"])
+        self.assertTrue(all("correct_option_id" in entry for entry in reopened["result"]["feedback"]))
+
     def test_concurrent_start_and_submit_do_not_duplicate_attempts(self):
         clients = [self.login(), self.login()]
         with ThreadPoolExecutor(max_workers=2) as pool:

@@ -120,6 +120,51 @@ class EduStreamApiTests(unittest.TestCase):
         refreshed = self.request(admin, "/api/dashboard")
         self.assertFalse(any(item["id"] == item_id for item in refreshed["pending_items"]))
 
+    def test_admin_published_content_is_included_in_full_catalogue_plans(self):
+        admin = self.login("admin")
+        created = self.request(
+            admin,
+            "/api/content",
+            "POST",
+            {
+                "title": "Admin Published Module",
+                "category": "Data",
+                "description": "A module that an administrator publishes directly without review.",
+                "content_type": "course",
+                "duration_minutes": 30,
+            },
+        )
+        with server.connect_db() as connection:
+            plan_codes = {
+                row["code"]
+                for row in connection.execute(
+                    "SELECT plans.code FROM plan_entitlements JOIN plans ON plans.id = plan_entitlements.plan_id "
+                    "WHERE plan_entitlements.learning_item_id = ?",
+                    (created["item_id"],),
+                )
+            }
+        self.assertEqual(plan_codes, {"plus", "team"})
+
+    def test_non_object_json_body_is_rejected_with_400(self):
+        learner = self.login("learner")
+        for path in ("/api/login", "/api/progress", "/api/subscription"):
+            for raw in (b"[]", b"[1]", b"null", b'"text"', b"5"):
+                with self.subTest(path=path, body=raw):
+                    body = self._raw_post(learner, path, raw)
+                    self.assertFalse(body["ok"])
+                    self.assertIn("JSON object", body["error"])
+
+    def _raw_post(self, client, path, data):
+        request = urllib.request.Request(
+            self.base_url + path, data=data, method="POST", headers={"Content-Type": "application/json"}
+        )
+        try:
+            client.open(request, timeout=5)
+        except urllib.error.HTTPError as error:
+            self.assertEqual(error.code, 400)
+            return json.loads(error.read().decode("utf-8"))
+        self.fail("Expected a 400 response")
+
     def test_role_protection(self):
         educator = self.login("educator")
         denied = self.request(educator, "/api/subscription", "POST", {"plan_id": 1}, expected=403)
