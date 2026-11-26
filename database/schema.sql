@@ -138,6 +138,16 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_assessment_one_draft
 CREATE INDEX IF NOT EXISTS idx_assessment_history
     ON assessment_attempts(user_id, learning_item_id, assessment_id, id DESC);
 
+CREATE TABLE IF NOT EXISTS sessions (
+    token_hash TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_sessions_expires
+    ON sessions(expires_at);
+
 CREATE INDEX IF NOT EXISTS idx_subscriptions_user_status
     ON subscriptions(user_id, status, end_date);
 
