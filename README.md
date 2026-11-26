@@ -59,6 +59,10 @@ These credentials are for a local prototype only.
 
 The session cookie gets the `Secure` flag automatically when `--host` is anything other than a loopback address (for example `--host 0.0.0.0`). Browsers only send Secure cookies over HTTPS, so serve the site through a TLS proxy in that case. Override with `--secure-cookies on|off` or the `EDUSTREAM_SECURE_COOKIES` environment variable, for example `--secure-cookies off` for a plain-HTTP demo on a classroom network.
 
+The sign-in page shows one-click Learner, Educator and Admin buttons. The demo passwords are served by `/api/session` only while these are on, not written into the page. Turn them off for any public deployment with `--demo-logins off` or `EDUSTREAM_DEMO_LOGINS=off`.
+
+State-changing requests must be same-origin JSON: the server refuses a POST whose `Origin` or `Sec-Fetch-Site` shows another site, or whose `Content-Type` is not `application/json` (file uploads use `application/octet-stream` with the `X-File-Name` header). This backs up the `SameSite=Lax` session cookie. If you put the site behind a proxy that rewrites the `Host` header, forward the original host.
+
 ## Project structure
 
 ```text

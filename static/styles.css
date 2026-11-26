@@ -451,3 +451,21 @@ textarea { min-height: 140px; line-height: 1.65; resize: vertical; }
 .plan-quote dd { margin: 0; color: var(--ink); font-weight: 700; }
 .plan-dialog-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; }
 @media (max-width: 480px) { .plan-dialog-actions { flex-direction: column-reverse; } .plan-dialog-actions .button { width: 100%; } }
+
+/* Lesson materials, review notes and the reject dialog */
+.lesson-materials { margin: 18px 0; }
+.lesson-materials h3 { margin: 0 0 4px; font-size: 1rem; }
+.lesson-materials > p { margin: 0 0 12px; }
+.lesson-outcomes { display: grid; gap: 6px; margin: 0 0 14px; padding: 0; list-style: none; font-size: .875rem; }
+.lesson-outcomes li { display: flex; gap: 8px; align-items: flex-start; }
+.lesson-outcomes .ui-icon { flex: 0 0 auto; width: 16px; height: 16px; margin-top: 3px; color: #2f7d5b; }
+.lesson-steps { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.lesson-steps a { display: flex; gap: 12px; align-items: flex-start; padding: 11px 13px; border: 1px solid var(--line); border-radius: 9px; color: var(--ink); text-decoration: none; }
+.lesson-steps a:hover, .lesson-steps a:focus-visible { border-color: #8cb8f7; background: #f5f9ff; }
+.lesson-steps strong { display: block; font-size: .875rem; }
+.lesson-steps small { display: block; margin-top: 2px; color: #5b6b82; font-size: .8125rem; line-height: 1.5; }
+.lesson-step-number { display: grid; flex: 0 0 26px; height: 26px; place-items: center; border-radius: 50%; background: #eaf2ff; color: #1d63d6; font-size: .8125rem; font-weight: 700; }
+.review-note { max-width: 260px; margin: 6px 0 2px; color: #8c2f3b; font-size: .8125rem; line-height: 1.5; }
+.edit-item-link { margin-top: 4px; font-size: .8125rem; }
+.reject-dialog textarea { min-height: 110px; }
+.field-hint { margin: 6px 0 0; color: #5b6b82; font-size: .8125rem; }

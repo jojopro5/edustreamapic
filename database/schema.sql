@@ -44,6 +44,8 @@ CREATE TABLE IF NOT EXISTS learning_items (
     created_by INTEGER NOT NULL,
     status TEXT NOT NULL CHECK (status IN ('pending', 'approved', 'rejected')),
     created_at TEXT NOT NULL,
+    review_note TEXT,
+    reviewed_at TEXT,
     FOREIGN KEY (created_by) REFERENCES users(id)
 );
 
