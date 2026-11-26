@@ -1,0 +1,5 @@
+.attachment-link { display: block; width: fit-content; margin-top: 6px; color: #2374ed; font-size: .75rem; font-weight: 600; text-decoration: underline; text-underline-offset: 2px; overflow-wrap: anywhere; }
+.attachment-none { margin: 6px 0 0; color: #65758b; font-size: .75rem; }
+.dialog-attachment { margin: 14px 0 4px; }
+.dialog-attachment .button { width: 100%; white-space: normal; overflow-wrap: anywhere; }
+input[type="file"] { min-height: auto; padding: 9px 10px; }

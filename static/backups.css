@@ -1,0 +1,21 @@
+/* Administrator backup and recovery view (T4). */
+.backup-list { display: grid; }
+.backup-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 14px 18px; align-items: start; padding: 20px 24px; border-bottom: 1px solid #f0f3f8; }
+.backup-row:last-child { border-bottom: 0; }
+.backup-row.backup-failed { background: #fff8f9; }
+.backup-title { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.backup-title strong { color: #34465f; font-size: .9375rem; }
+.backup-name { margin: 6px 0 0; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .75rem; color: #65758b; overflow-wrap: anywhere; }
+.backup-meta { margin: 4px 0 0; font-size: .75rem; color: #65758b; }
+.backup-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+.backup-problems { margin: 10px 0 0; padding-left: 18px; color: #b03a49; font-size: .8125rem; line-height: 1.5; }
+.restore-form { grid-column: 1 / -1; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; padding: 14px; border: 1px solid #f3c9cf; border-radius: 12px; background: #fff; }
+.restore-form label { grid-column: 1 / -1; color: #4d5d73; font-size: .8125rem; line-height: 1.5; }
+.restore-form input { min-width: 0; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .8125rem; }
+.restore-form .inline-error { grid-column: 1 / -1; }
+.backup-empty, .backup-loading { padding: 28px 24px; margin: 0; }
+@media (max-width: 640px) {
+  .backup-row { grid-template-columns: minmax(0, 1fr); padding: 18px; }
+  .backup-actions { justify-content: flex-start; }
+  .restore-form { grid-template-columns: minmax(0, 1fr); }
+}

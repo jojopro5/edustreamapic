@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720" role="img" aria-label="HTML and CSS building blocks">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0b3b40"/>
+      <stop offset="1" stop-color="#178a8d"/>
+    </linearGradient>
+  </defs>
+  <rect width="1280" height="720" fill="url(#bg)"/>
+  <rect x="1001" y="240" width="76" height="76" rx="18" fill="#9ee3df" opacity="0.20" transform="rotate(-2 1001 240)"/>
+  <circle cx="1261" cy="136" r="48" fill="none" stroke="#9ee3df" stroke-width="10" opacity="0.13"/>
+  <rect x="1149" y="170" width="148" height="148" rx="18" fill="#9ee3df" opacity="0.13" transform="rotate(19 1149 170)"/>
+  <circle cx="896" cy="503" r="162" fill="none" stroke="#9ee3df" stroke-width="10" opacity="0.13"/>
+  <rect x="1210" y="641" width="155" height="155" rx="18" fill="#9ee3df" opacity="0.20" transform="rotate(-8 1210 641)"/>
+  <circle cx="1182" cy="495" r="48" fill="none" stroke="#9ee3df" stroke-width="10" opacity="0.10"/>
+  <text x="96" y="92" fill="#9ee3df" font-family="Arial, Helvetica, sans-serif" font-size="34" font-weight="700" letter-spacing="6">FOUNDATIONS</text>
+  <text x="96" y="178" fill="#ffffff" font-family="Arial, Helvetica, sans-serif" font-size="84" font-weight="800"><tspan x="96" dy="0">HTML and CSS</tspan><tspan x="96" dy="92">building blocks</tspan></text>
+  <rect x="96" y="560" width="300" height="60" rx="12" fill="#ffffff" opacity="0.14"/>
+  <text x="120" y="601" fill="#ffffff" font-family="Arial, Helvetica, sans-serif" font-size="28" font-weight="700">EduStream study clip</text>
+</svg>
