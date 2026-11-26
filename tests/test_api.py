@@ -120,6 +120,10 @@ class EduStreamApiTests(unittest.TestCase):
         refreshed = self.request(admin, "/api/dashboard")
         self.assertFalse(any(item["id"] == item_id for item in refreshed["pending_items"]))
 
+        # Approved but without a quiz, so learners still cannot see it.
+        learner_items = self.request(self.login("learner"), "/api/dashboard")["items"]
+        self.assertFalse(any(item["id"] == item_id for item in learner_items))
+
     def test_admin_published_content_is_included_in_full_catalogue_plans(self):
         admin = self.login("admin")
         created = self.request(
@@ -329,7 +333,7 @@ class EduStreamApiTests(unittest.TestCase):
                 self.assertTrue(all(feedback["correct"] for feedback in result["feedback"]))
                 self.assertEqual(self.request(learner, f"/api/quiz/{item_id}")["last_attempt"]["score"], 100)
 
-    def test_visibility_hides_courses_without_quizzes_even_for_plus(self):
+    def test_visibility_requires_quiz_then_follows_plan(self):
         learner = self.login("learner")
         dashboard = self.request(learner, "/api/dashboard")
         plus = next(plan for plan in dashboard["plans"] if plan["code"] == "plus")
@@ -346,11 +350,25 @@ class EduStreamApiTests(unittest.TestCase):
             self.request(learner, "/api/access/4", expected=403)
             self.request(learner, "/api/progress", "POST", {"item_id": 4, "progress": 100}, expected=403)
             self.request(learner, "/api/quiz/4", expected=404)
-            # Even another approved course with a quiz stays outside this release.
-            with patch.dict(server.QUIZZES, {4: {**server.QUIZZES[1], "item_id": 4}}):
-                self.assertEqual([item["id"] for item in self.request(learner, "/api/dashboard")["items"]], [1, 2, 3])
+            # Once the same item has a quiz and assessment bank, it appears without a code-level ID list.
+            with patch.dict(server.QUIZZES, {4: {**server.QUIZZES[1], "item_id": 4}}), \
+                    patch.dict(server.assessments.COURSE_ASSESSMENTS, {4: server.assessments.COURSE_ASSESSMENTS[1]}):
+                dashboard = self.request(learner, "/api/dashboard")
+                self.assertEqual([item["id"] for item in dashboard["items"]], [1, 2, 3, 4])
+                self.assertTrue(next(item for item in dashboard["items"] if item["id"] == 4)["entitled"])
+                self.request(learner, "/api/access/4")
+                self.request(learner, "/api/quiz/4")
+                self.request(learner, "/api/assessments/4")
+            # A Starter plan does not include it, so it is listed but locked.
+            starter = next(plan for plan in dashboard["plans"] if plan["code"] == "starter")
+            self.request(learner, "/api/subscription", "POST", {"plan_id": starter["id"], "confirm": True})
+            with patch.dict(server.QUIZZES, {4: {**server.QUIZZES[1], "item_id": 4}}), \
+                    patch.dict(server.assessments.COURSE_ASSESSMENTS, {4: server.assessments.COURSE_ASSESSMENTS[1]}):
+                dashboard = self.request(learner, "/api/dashboard")
+                self.assertFalse(next(item for item in dashboard["items"] if item["id"] == 4)["entitled"])
                 self.request(learner, "/api/access/4", expected=403)
                 self.request(learner, "/api/quiz/4", expected=403)
+            self.request(learner, "/api/subscription", "POST", {"plan_id": plus["id"], "confirm": True})
         finally:
             with server.connect_db() as connection:
                 connection.execute("UPDATE learning_items SET status = 'pending' WHERE id = 4")

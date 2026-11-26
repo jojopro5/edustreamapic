@@ -46,7 +46,6 @@ LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 LOGIN_WINDOW_SECONDS = 15 * 60
 LOGIN_MAX_FAILURES_PER_ACCOUNT = 5
 LOGIN_MAX_FAILURES_PER_CLIENT = 20
-LEARNER_COURSE_IDS = frozenset({1, 2, 3})
 
 # Each request gets a correlation ID. It is returned as X-Request-ID and written
 # on every audit event the request causes, so one action can be traced end to end.
@@ -297,14 +296,23 @@ def active_subscription(connection: sqlite3.Connection, user_id: int) -> sqlite3
     ).fetchone()
 
 
+def has_course_assessments(item_id: int) -> bool:
+    """True when the item has a practice quiz and module assessment banks."""
+    quiz = QUIZZES.get(item_id)
+    return bool(quiz and quiz.get("questions")) and assessments.has_assessments(item_id)
+
+
 def learner_visible(item: dict | sqlite3.Row) -> bool:
-    """Publish only approved, non-Indonesian resources with a usable quiz."""
-    quiz = QUIZZES.get(item["id"])
+    """Show learners approved, non-Indonesian items that have a quiz.
+
+    Visibility comes from the item's review status and language plus whether a
+    quiz and assessment bank exist for it, not from a fixed list of IDs. Whether
+    a learner can open an item is still decided by their plan in has_entitlement().
+    """
     return (
-        item["id"] in LEARNER_COURSE_IDS
-        and item["status"] == "approved"
+        item["status"] == "approved"
         and item["language"] != "id"
-        and bool(quiz and quiz.get("questions"))
+        and has_course_assessments(item["id"])
     )
 
 
@@ -977,7 +985,7 @@ class EduStreamHandler(BaseHTTPRequestHandler):
                     if learner_visible(row)
                 ]
                 for item in items:
-                    item["has_quiz"] = item["id"] in QUIZZES
+                    item["has_quiz"] = True
                     item["quiz_question_count"] = sum(entry["question_count"] for entry in assessments.definitions(item["id"]))
                     assessment_status = course_completion(connection, user["id"], item["id"], item["progress_percent"])
                     item["completed"] = assessment_status["completed"]
