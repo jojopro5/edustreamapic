@@ -7,6 +7,7 @@
   <title>EduStream | Your learning space</title>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/uploads.css">
   <link rel="stylesheet" href="/login.css">
   <link rel="stylesheet" href="/backups.css">
   <link rel="stylesheet" href="/quiz.css">
@@ -122,6 +123,7 @@
     <p id="dialog-metadata" class="dialog-metadata"></p>
     <p id="dialog-description" class="muted"></p>
     <div class="verified-box"><div><strong>✓ Access verified</strong><p id="dialog-body"></p></div></div>
+    <p id="dialog-attachment" class="dialog-attachment hidden"><a id="dialog-attachment-link" class="button secondary small" href="#" download></a></p>
     <p class="muted">Study progress records your learning activity. Course completion requires passing all module quizzes and the final assessment.</p><label for="progress-slider">Update study progress</label>
     <div class="progress-update">
       <input id="progress-slider" type="range" min="0" max="100" step="1" value="0">
@@ -160,6 +162,7 @@
   <div id="mobile-overlay" class="mobile-overlay"></div>
   <script src="/backups.js" defer></script>
   <script src="/course-guides.js" defer></script>
+  <script src="/uploads.js" defer></script>
   <script src="/quiz.js" defer></script>
   <script src="/app.js" defer></script>
 </body>
