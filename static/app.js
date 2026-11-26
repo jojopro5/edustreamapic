@@ -160,13 +160,14 @@ function render() {
   const views = {
     learner: { overview: learnerOverview, learning: learnerLearning, library: learnerLibrary, subject: learnerSubject, subscription: learnerSubscription },
     educator: { overview: educatorOverview, studio: educatorStudio, content: educatorContent },
-    admin: { overview: adminOverview, approvals: adminApprovals, feedback: adminFeedback, audit: adminAudit }
+    admin: { overview: adminOverview, approvals: adminApprovals, feedback: adminFeedback, audit: adminAuditSearch }
   };
   views.admin.backups = adminBackups;
   $("#app-content").innerHTML = (views[state.user.role][state.view] || views[state.user.role].overview)();
   if ($("#moderation-list")) renderModerationList($("#moderation-list"), state.dashboard.feedback || [], message => loadDashboard(message));
   bindViewEvents();
   if ($("#backup-list")) bindBackupView();
+  if ($("#audit-filters")) bindAuditSearch();
 }
 function learnerOverview() {
   setPage("Overview", "Learner workspace");
@@ -334,11 +335,6 @@ function adminFeedback() {
   const entries = state.dashboard.feedback || [];
   const hidden = entries.filter(entry => entry.status === "hidden").length;
   return hero("MODERATION", "Keep course discussion useful and safe.", "Hide a comment that breaks the rules. Hidden comments stay here for the record and can be restored.") + '<section class="panel"><div class="panel-header"><div><h2>Recent feedback</h2><p>' + entries.length + ' most recent comments · ' + hidden + ' hidden</p></div></div><div id="moderation-list" class="moderation-list"></div></section>';
-}
-function adminAudit() {
-  setPage("Audit reports", "Administrator workspace");
-  return hero("PLATFORM ACTIVITY", "A clear record of what happened.", "Follow account access, subscription changes, learning progress, and publication decisions.") + '<section class="panel"><div class="panel-header"><div><h2>Event log</h2><p>The 30 most recent recorded events</p></div><span class="badge neutral">' + state.dashboard.audit.length + ' events</span></div><div class="audit-list">' +
-    (state.dashboard.audit.map(event => '<div class="audit-row"><span class="activity-icon ' + (event.event_type.includes("denied") ? 'theme-red' : '') + '">' + icon(event.event_type.includes("denied") ? "lock" : "audit") + '</span><div><strong>' + escapeHtml(titleCase(event.event_type)) + '</strong><p>' + escapeHtml(event.details) + '</p></div><span class="audit-user">' + escapeHtml(event.user_name) + '</span><time>' + formatDate(event.created_at) + '<small>' + formatTime(event.created_at) + '</small></time></div>').join("") || emptyState("No events recorded", "New activity will be shown here.", "audit")) + '</div></section>';
 }
 function adminBackups() {
   setPage("Backup & recovery", "Administrator workspace");

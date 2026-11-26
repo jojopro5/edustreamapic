@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import contextvars
 import hashlib
 import hmac
 import json
@@ -12,12 +13,13 @@ import sqlite3
 import threading
 import time
 import traceback
+import uuid
 from datetime import UTC, datetime, timedelta
 from http import HTTPStatus
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 import uploads
 
@@ -43,6 +45,12 @@ LOGIN_WINDOW_SECONDS = 15 * 60
 LOGIN_MAX_FAILURES_PER_ACCOUNT = 5
 LOGIN_MAX_FAILURES_PER_CLIENT = 20
 LEARNER_COURSE_IDS = frozenset({1, 2, 3})
+
+# Each request gets a correlation ID. It is returned as X-Request-ID and written
+# on every audit event the request causes, so one action can be traced end to end.
+CORRELATION_ID: contextvars.ContextVar[str | None] = contextvars.ContextVar("correlation_id", default=None)
+REQUEST_ID_PATTERN = re.compile(r"[A-Za-z0-9_-]{8,64}")
+AUDIT_OUTCOMES = ("success", "failure", "denied")
 
 
 class ClosingConnection(sqlite3.Connection):
@@ -205,6 +213,15 @@ def initialize_database(reset: bool = False) -> None:
         DB_PATH.unlink()
     with connect_db() as connection:
         connection.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
+        audit_columns = {row["name"] for row in connection.execute("PRAGMA table_info(audit_events)")}
+        if "outcome" not in audit_columns:
+            connection.execute(
+                "ALTER TABLE audit_events ADD COLUMN outcome TEXT NOT NULL DEFAULT 'success' "
+                "CHECK (outcome IN ('success', 'failure', 'denied'))"
+            )
+        if "correlation_id" not in audit_columns:
+            connection.execute("ALTER TABLE audit_events ADD COLUMN correlation_id TEXT")
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_audit_events_correlation ON audit_events(correlation_id)")
         columns = {row["name"] for row in connection.execute("PRAGMA table_info(learning_items)")}
         if "language" not in columns:
             # Existing curated courses are English; keep all records and progress.
@@ -214,11 +231,32 @@ def initialize_database(reset: bool = False) -> None:
         seed_database(connection)
 
 
-def record_audit(connection: sqlite3.Connection, user_id: int | None, event_type: str, details: str) -> None:
+def audit_outcome(event_type: str) -> str:
+    """Default outcome from the event name; callers may pass one explicitly."""
+    if any(word in event_type for word in ("denied", "refused", "rate_limited", "throttled", "blocked")):
+        return "denied"
+    if any(word in event_type for word in ("failed", "rejected")):
+        return "failure"
+    return "success"
+
+
+def record_audit(connection: sqlite3.Connection, user_id: int | None, event_type: str, details: str,
+                 outcome: str | None = None) -> None:
+    outcome = outcome or audit_outcome(event_type)
+    if outcome not in AUDIT_OUTCOMES:
+        raise ValueError(f"Unknown audit outcome: {outcome}")
     connection.execute(
-        "INSERT INTO audit_events (user_id, event_type, details, created_at) VALUES (?, ?, ?, ?)",
-        (user_id, event_type, details[:500], iso_now()),
+        """
+        INSERT INTO audit_events (user_id, event_type, details, created_at, outcome, correlation_id)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (user_id, event_type, details[:500], iso_now(), outcome, CORRELATION_ID.get()),
     )
+
+
+def pseudonym(email: str) -> str:
+    """Stable pseudonymous label for an email in audit details (no address stored)."""
+    return "acct-" + hashlib.sha256(email.strip().lower().encode("utf-8")).hexdigest()[:12]
 
 
 SUBSCRIPTION_PERIOD_DAYS = 30
@@ -406,6 +444,8 @@ class EduStreamHandler(BaseHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Frame-Options", "DENY")
         self.send_header("Referrer-Policy", "no-referrer")
+        if CORRELATION_ID.get():
+            self.send_header("X-Request-ID", CORRELATION_ID.get())
         self.send_header(
             "Content-Security-Policy",
             "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'",
@@ -477,6 +517,10 @@ class EduStreamHandler(BaseHTTPRequestHandler):
             self._error("Please sign in to continue.", HTTPStatus.UNAUTHORIZED)
             return None
         if roles and user["role"] not in roles:
+            with connect_db() as connection:
+                record_audit(connection, user["id"], "permission_denied",
+                             f"{self.command} {urlparse(self.path).path} needs {'/'.join(sorted(roles))}, account is {user['role']}")
+                connection.commit()
             self._error("Your account does not have permission for this action.", HTTPStatus.FORBIDDEN)
             return None
         return user
@@ -503,6 +547,9 @@ class EduStreamHandler(BaseHTTPRequestHandler):
 
     def _run_safely(self, handler) -> None:
         """Answer with a JSON 500 instead of dropping the connection on an unexpected error."""
+        supplied = self.headers.get("X-Request-ID", "")
+        request_id = supplied if REQUEST_ID_PATTERN.fullmatch(supplied) else uuid.uuid4().hex[:16]
+        token = CORRELATION_ID.set(request_id)
         try:
             handler()
         except Exception:
@@ -511,6 +558,8 @@ class EduStreamHandler(BaseHTTPRequestHandler):
                 self._error("Something went wrong on the server. Please try again.", HTTPStatus.INTERNAL_SERVER_ERROR)
             except Exception:
                 pass
+        finally:
+            CORRELATION_ID.reset(token)
 
     def do_GET(self) -> None:
         self._run_safely(self._handle_get)
@@ -529,6 +578,15 @@ class EduStreamHandler(BaseHTTPRequestHandler):
             user = self._require_user({"admin"})
             if user:
                 self._json({"ok": True, "backups": backups.list_backups(DB_PATH)})
+            return
+
+        if path == "/api/admin/audit":
+            user = self._require_user({"admin"})
+            if user:
+                try:
+                    self._audit_search(user, parse_qs(parsed.query))
+                except ValueError as exc:
+                    self._error(str(exc), HTTPStatus.BAD_REQUEST)
             return
 
         if path == "/api/session":
@@ -613,14 +671,39 @@ class EduStreamHandler(BaseHTTPRequestHandler):
 
         self._error("API endpoint not found.", HTTPStatus.NOT_FOUND)
 
+    def _cross_site_problem(self, path: str) -> str | None:
+        """Reject cross-site form posts: JSON only, and Origin (when sent) must be this site."""
+        origin = self.headers.get("Origin")
+        if origin and origin != "null" and urlparse(origin).netloc.lower() != (self.headers.get("Host") or "").lower():
+            return "origin"
+        if origin == "null":
+            return "origin"
+        content_type = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        expected = "application/octet-stream" if re.fullmatch(r"/api/content/\d+/attachment", path) else "application/json"
+        if content_type != expected:
+            return "content_type"
+        return None
+
     def _handle_post(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/") or "/"
+        problem = self._cross_site_problem(path)
+        if problem:
+            with connect_db() as connection:
+                record_audit(connection, None, "request_blocked", f"POST {path}: {problem} check failed")
+                connection.commit()
+            self._error("This request was blocked because it did not come from the EduStream site.", HTTPStatus.FORBIDDEN)
+            return
         try:
             if path == "/api/login":
                 self._login(self._body())
                 return
             if path == "/api/logout":
+                user = self._current_user()
+                if user:
+                    with connect_db() as connection:
+                        record_audit(connection, user["id"], "logout", "Signed out")
+                        connection.commit()
                 delete_session(self._session_token())
                 self._json({"ok": True}, cookies=[self._session_cookie("", 0)])
                 return
@@ -713,6 +796,9 @@ class EduStreamHandler(BaseHTTPRequestHandler):
         client = self.client_address[0]
         wait = LOGIN_THROTTLE.retry_after(client, email)
         if wait:
+            with connect_db() as connection:
+                record_audit(connection, None, "login_throttled", f"Sign-in blocked for {pseudonym(email)}; retry after {wait}s")
+                connection.commit()
             self._json(
                 {"ok": False, "error": "Too many failed sign-in attempts. Please wait and try again."},
                 HTTPStatus.TOO_MANY_REQUESTS,
@@ -726,6 +812,9 @@ class EduStreamHandler(BaseHTTPRequestHandler):
             ).fetchone()
             if not user or not verify_password(password, user["password_salt"], user["password_hash"]):
                 LOGIN_THROTTLE.record_failure(client, email)
+                record_audit(connection, user["id"] if user else None, "login_failed",
+                             f"Wrong password for {pseudonym(email)}" if user else f"Unknown account {pseudonym(email)}")
+                connection.commit()
                 self._error("The email or password is incorrect.", HTTPStatus.UNAUTHORIZED)
                 return
             LOGIN_THROTTLE.record_success(client, email)
@@ -839,7 +928,7 @@ class EduStreamHandler(BaseHTTPRequestHandler):
                 dict(row)
                 for row in connection.execute(
                     """
-                    SELECT ae.id, ae.event_type, ae.details, ae.created_at,
+                    SELECT ae.id, ae.event_type, ae.details, ae.created_at, ae.outcome, ae.correlation_id,
                            COALESCE(u.full_name, 'System') AS user_name
                     FROM audit_events ae
                     LEFT JOIN users u ON u.id = ae.user_id
@@ -872,6 +961,48 @@ class EduStreamHandler(BaseHTTPRequestHandler):
                     "pending_content": len(pending_items),
                 },
             }
+
+    def _audit_search(self, user: dict, query: dict) -> None:
+        """Filter audit events by type, outcome, correlation ID or account, newest first (max 200)."""
+        clauses, params = [], []
+        event_type = (query.get("event_type") or [""])[0].strip()
+        outcome = (query.get("outcome") or [""])[0].strip()
+        correlation_id = (query.get("correlation_id") or [""])[0].strip()
+        user_id = (query.get("user_id") or [""])[0].strip()
+        if event_type:
+            if not re.fullmatch(r"[a-z_]{2,40}", event_type):
+                raise ValueError("Event type may contain only lowercase letters and underscores.")
+            clauses.append("ae.event_type = ?")
+            params.append(event_type)
+        if outcome:
+            if outcome not in AUDIT_OUTCOMES:
+                raise ValueError("Outcome must be success, failure or denied.")
+            clauses.append("ae.outcome = ?")
+            params.append(outcome)
+        if correlation_id:
+            if not REQUEST_ID_PATTERN.fullmatch(correlation_id):
+                raise ValueError("Correlation ID is 8 to 64 letters, digits, dashes or underscores.")
+            clauses.append("ae.correlation_id = ?")
+            params.append(correlation_id)
+        if user_id:
+            if not user_id.isdigit():
+                raise ValueError("Account ID must be a number.")
+            clauses.append("ae.user_id = ?")
+            params.append(int(user_id))
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        with connect_db() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT ae.id, ae.user_id, ae.event_type, ae.details, ae.created_at, ae.outcome, ae.correlation_id,
+                       COALESCE(u.full_name, 'System') AS user_name
+                FROM audit_events ae LEFT JOIN users u ON u.id = ae.user_id
+                {where}
+                ORDER BY ae.id DESC LIMIT 200
+                """,
+                params,
+            ).fetchall()
+            types = [row[0] for row in connection.execute("SELECT DISTINCT event_type FROM audit_events ORDER BY event_type")]
+        self._json({"ok": True, "events": [dict(row) for row in rows], "event_types": types})
 
     def _assessment_request(self, user: dict, action: str = "overview", item_id: int | None = None,
                             attempt_id: int | None = None, body: dict | None = None) -> None:
@@ -1269,7 +1400,7 @@ class EduStreamHandler(BaseHTTPRequestHandler):
         self._json({"ok": True, "message": f"Content {decision}."})
 
     def _create_backup(self, user: dict) -> None:
-        ref = secrets.token_hex(4)
+        ref = CORRELATION_ID.get() or secrets.token_hex(4)
         try:
             manifest = backups.create_backup(DB_PATH, f"{user['full_name']} (user {user['id']})")
         except (OSError, sqlite3.Error, backups.BackupError) as exc:
@@ -1285,7 +1416,7 @@ class EduStreamHandler(BaseHTTPRequestHandler):
         self._json({"ok": True, "message": "Backup created and verified.", "backup": manifest["file"]})
 
     def _verify_backup(self, user: dict, name: str) -> None:
-        ref = secrets.token_hex(4)
+        ref = CORRELATION_ID.get() or secrets.token_hex(4)
         if not backups.exists(DB_PATH, name):
             self._error("Backup was not found.", HTTPStatus.NOT_FOUND)
             return
@@ -1300,7 +1431,7 @@ class EduStreamHandler(BaseHTTPRequestHandler):
         self._json({"ok": True, "name": name, "valid": result["ok"], "problems": result["problems"]})
 
     def _restore_backup(self, user: dict, name: str, body: dict) -> None:
-        ref = secrets.token_hex(4)
+        ref = CORRELATION_ID.get() or secrets.token_hex(4)
         if body.get("confirm") != name:
             raise ValueError("Type the backup name to confirm the restore.")
         if not backups.exists(DB_PATH, name):
