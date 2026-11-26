@@ -3,6 +3,7 @@
 Test IDs:
   T1_SUB_01-05  plan change and renewal need confirmation and keep paid days
   T3_CMP_01-03  the progress message and the Completed counter use one rule
+  T1_SUB_06-07  the hidden Team plan is not listed or sold, and existing Team data keeps working
   GEN_SYN_01-02 course guide thumbnails are synthetic files served locally
 """
 
@@ -194,6 +195,35 @@ class BillingAndCompletionTests(unittest.TestCase):
             )]
         self.assertEqual(len(details), 2)
         self.assertTrue(all("access ends" in detail for detail in details))
+
+    def test_T1_SUB_06_team_plan_is_hidden_and_cannot_be_bought(self):
+        plans = self.request(self.learner, "/api/dashboard")["plans"]
+        self.assertEqual([plan["code"] for plan in plans], ["starter", "plus"])
+        session_plans = self.request(self.learner, "/api/session")["plans"]
+        self.assertNotIn("team", {plan["code"] for plan in session_plans})
+        with server.connect_db() as connection:
+            team_id = connection.execute("SELECT id FROM plans WHERE code = 'team'").fetchone()[0]
+        before = self.billing_snapshot()
+        for payload in ({"plan_id": team_id}, {"plan_id": team_id, "confirm": True}):
+            with self.subTest(payload=payload):
+                body = self.request(self.learner, "/api/subscription", "POST", payload, expected=400)
+                self.assertIn("no longer offered", body["error"])
+        self.assertEqual(self.billing_snapshot(), before)
+
+    def test_T1_SUB_07_existing_team_subscription_keeps_course_access(self):
+        with server.connect_db() as connection:
+            team_id = connection.execute("SELECT id FROM plans WHERE code = 'team'").fetchone()[0]
+            connection.execute(
+                "UPDATE subscriptions SET plan_id = ? WHERE user_id = ? AND status = 'active'",
+                (team_id, self.learner_id),
+            )
+        dashboard = self.request(self.learner, "/api/dashboard")
+        self.assertEqual(dashboard["subscription"]["plan_code"], "team")
+        self.assertTrue(all(item["entitled"] for item in dashboard["items"]))
+        self.request(self.learner, "/api/access/3")
+        plus = next(plan for plan in dashboard["plans"] if plan["code"] == "plus")
+        self.request(self.learner, "/api/subscription", "POST", {"plan_id": plus["id"], "confirm": True})
+        self.assertEqual(self.active()["plan_code"], "plus")
 
     # -- T3: one completion rule ----------------------------------------
 

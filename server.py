@@ -220,6 +220,16 @@ def record_audit(connection: sqlite3.Connection, user_id: int | None, event_type
 
 
 SUBSCRIPTION_PERIOD_DAYS = 30
+# Plans kept in the database (for existing records) but no longer offered or sold.
+HIDDEN_PLAN_CODES = frozenset({"team"})
+
+
+def offered_plans(connection: sqlite3.Connection) -> list[dict]:
+    return [
+        dict(row)
+        for row in connection.execute("SELECT * FROM plans ORDER BY price_monthly")
+        if row["code"] not in HIDDEN_PLAN_CODES
+    ]
 
 
 def active_subscription(connection: sqlite3.Connection, user_id: int) -> sqlite3.Row | None:
@@ -493,7 +503,7 @@ class EduStreamHandler(BaseHTTPRequestHandler):
         if path == "/api/session":
             user = self._current_user()
             with connect_db() as connection:
-                plans = [dict(row) for row in connection.execute("SELECT * FROM plans ORDER BY price_monthly")]
+                plans = offered_plans(connection)
             self._json({"ok": True, "authenticated": bool(user), "user": user, "plans": plans})
             return
 
@@ -673,7 +683,7 @@ class EduStreamHandler(BaseHTTPRequestHandler):
 
     def _dashboard(self, user: dict) -> dict:
         with connect_db() as connection:
-            plans = [dict(row) for row in connection.execute("SELECT * FROM plans ORDER BY price_monthly")]
+            plans = offered_plans(connection)
             if user["role"] == "learner":
                 subscription = active_subscription(connection, user["id"])
                 plan_id = subscription["plan_id"] if subscription else -1
@@ -1055,6 +1065,8 @@ class EduStreamHandler(BaseHTTPRequestHandler):
             plan = connection.execute("SELECT * FROM plans WHERE id = ?", (plan_id,)).fetchone()
             if not plan:
                 raise ValueError("The selected subscription plan does not exist.")
+            if plan["code"] in HIDDEN_PLAN_CODES:
+                raise ValueError("The selected subscription plan is no longer offered.")
             current = active_subscription(connection, user["id"])
             today = utc_now().date()
             current_end = datetime.fromisoformat(current["end_date"]).date() if current else None

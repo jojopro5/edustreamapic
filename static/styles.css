@@ -219,7 +219,7 @@ textarea { min-height: 140px; line-height: 1.65; resize: vertical; }
 .subscription-detail span, .subscription-detail strong { display: block; font-size: .75rem; }
 .subscription-detail span { color: #577094; margin-bottom: 6px; }
 .subscription-detail strong { color: #567196; font-weight: 600; }
-.plan-grid { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 20px; }
+.plan-grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(260px,1fr)); gap: 20px; }
 .plan-card { display: flex; position: relative; min-height: 345px; flex-direction: column; padding: 24px; border: 1px solid var(--line); border-radius: 13px; background: white; }
 .plan-card.current { border-color: #8cb6f5; box-shadow: 0 0 0 2px #edf4ff; }
 .plan-card.featured-plan { background: linear-gradient(140deg,#f5f9ff,white); }
