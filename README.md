@@ -48,10 +48,20 @@ These credentials are for a local prototype only.
 - Password hashing and parameterised SQL queries
 - Sign-in throttling: 5 failed attempts per account per client (20 per client overall) in 15 minutes returns HTTP 429 with `Retry-After`
 - Sessions stored in SQLite (as SHA-256 token digests), so sign-ins survive a server restart
+- Learner self-registration (learner role only), a My profile page for every role, and password change that ends other sessions
+- Audit events with an outcome (success, failure or denied) and a correlation ID that matches the response's `X-Request-ID` header; failed and throttled sign-ins, logout and wrong-role requests are recorded
+- Cross-site request protection: POSTs must be JSON (or the file upload type) and any `Origin` header must match the site
+- A simulated payment method that can decline, so a failed payment can be demonstrated without real card data
+- Administrator takedown of published items with a required reason, and review decisions recorded with before and after status
+- An administrator Operations view with an analytics summary and open issues, plus `operations.py seed-problem` to plant a reproducible problem
 
 ### Running beyond your own machine
 
 The session cookie gets the `Secure` flag automatically when `--host` is anything other than a loopback address (for example `--host 0.0.0.0`). Browsers only send Secure cookies over HTTPS, so serve the site through a TLS proxy in that case. Override with `--secure-cookies on|off` or the `EDUSTREAM_SECURE_COOKIES` environment variable, for example `--secure-cookies off` for a plain-HTTP demo on a classroom network.
+
+The sign-in page shows one-click Learner, Educator and Admin buttons. The demo passwords are served by `/api/session` only while these are on, not written into the page. Turn them off for any public deployment with `--demo-logins off` or `EDUSTREAM_DEMO_LOGINS=off`.
+
+State-changing requests must be same-origin JSON: the server refuses a POST whose `Origin` or `Sec-Fetch-Site` shows another site, or whose `Content-Type` is not `application/json` (file uploads use `application/octet-stream` with the `X-File-Name` header). This backs up the `SameSite=Lax` session cookie. If you put the site behind a proxy that rewrites the `Host` header, forward the original host.
 
 ## Project structure
 
@@ -59,9 +69,11 @@ The session cookie gets the `Secure` flag automatically when `--host` is anythin
 EduStream/
   database/schema.sql     SQLite schema for Nimarta's database work
   assessment_content.py  Original module question banks (16 questions per module)
+  accounts.py            Registration and profile validation (T1)
   assessments.py         Attempt lifecycle, question selection, gates and grading
   backups.py             Signed SQLite backups, integrity checks, restore and the seeded fault (T4)
   docs/                  Evidence traces (requirement, threat, control, test, result)
+  operations.py          Operations summary, open issues and seeded problems (T4)
   quizzes.py              Legacy practice questions, retained for existing records
   static/                 Website interface and brand assets
   tests/                  End-to-end API and assessment workflow tests
@@ -103,6 +115,44 @@ Educators can attach one course file to a learning item in Content Studio. Use y
 - Accepted, rejected (with the reason), denied, downloaded and tampered files are audit events.
 
 Tests are in `tests/test_uploads.py`, named `T2_UP_01` to `T2_UP_08` for the test register. Back up `data/uploads/` together with `data/edustream.db`.
+
+## Accounts and profiles (T1)
+
+New visitors can create a learner account from the sign-in screen. Educator and administrator accounts are never created this way: any `role` sent with the form is ignored.
+
+- Passwords must be 10 to 128 characters, not on a short common-password list and not built from the email address. They are stored as salted PBKDF2 hashes.
+- At most 5 accounts can be created from one client address per hour.
+- Each account can view and edit only its own name; educators can also add a bio of up to 400 characters. Email and role cannot be changed through the profile.
+- Changing a password needs the current password and signs the account out of every other session.
+- A duplicate email is refused with HTTP 409. This tells the visitor that the email is registered, which is a known residual risk accepted for the prototype.
+
+Tests: `tests/test_accounts.py`, `T1_AC_01` to `T1_AC_08`.
+
+## Audit trail, cross-site checks and operations (T1, T2, T4)
+
+Every response carries an `X-Request-ID` header. A caller may supply its own ID (8 to 64 letters, digits, `-` or `_`), which is handy for tracing an integration test; otherwise the server generates one. Each audit event stores that ID as `correlation_id` together with an `outcome` of `success`, `failure` or `denied`. Failed sign-ins store a pseudonymous account label (`acct-` plus 12 hex characters of a SHA-256 of the email), never the address or the password.
+
+**Audit reports** lets an administrator filter by event type, outcome or correlation ID, and select a request ID on any event to see everything that request did.
+
+POST requests must use `Content-Type: application/json` (the file upload uses `application/octet-stream`), and an `Origin` header, when the browser sends one, must match the site. Anything else returns 403 and a `request_blocked` event. Together with `SameSite=Lax` cookies this stops another site from submitting forms on a signed-in user's behalf.
+
+When confirming a plan, the learner picks a fictitious test card. The declining card records a failed payment and a `payment_failed` event and leaves the current plan unchanged. No card details are ever accepted.
+
+Administrators can take down any published item from the approval queue. A reason of 5 to 300 characters is required and stored in the `content_taken_down` event; learners lose access straight away.
+
+**Operations** shows active subscriptions per plan, payments in the last 30 days, denied requests in the last 7 days, course engagement, and open issues: failed payments with no later success, 5 or more denied requests from one account in 24 hours, published items with markup or links, failed backup checks or file integrity checks, and submissions waiting more than a week. Each issue links to its audit events.
+
+To plant a reproducible problem for the T4 demo (synthetic data only):
+
+```powershell
+python operations.py seed-problem --kind payment   # declined renewal for the demo learner
+python operations.py seed-problem --kind access    # burst of denied requests from the demo learner
+python operations.py seed-problem --kind content   # published item hiding a script tag and an off-site link
+```
+
+Then sign in as the administrator, open **Operations**, follow **View related events**, fix the cause (renew with the approving card, review the account, or take the item down), and press **Refresh** to see the issue clear. Each seeding writes a `problem_seeded` audit event.
+
+Tests: `tests/test_audit_trail.py` (`T4_AU_01` to `T4_AU_07`, `T1_CS_01` to `T1_CS_02`) and `tests/test_operations.py` (`T1_PAY_01` to `T1_PAY_02`, `T2_TD_01`, `T4_OP_01` to `T4_OP_05`).
 
 ## Module quizzes and final assessments
 

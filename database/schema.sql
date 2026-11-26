@@ -8,7 +8,9 @@ CREATE TABLE IF NOT EXISTS users (
     password_hash TEXT NOT NULL,
     role TEXT NOT NULL CHECK (role IN ('learner', 'educator', 'admin')),
     is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    -- Optional profile text, shown for educators. Added to older databases at startup.
+    bio TEXT
 );
 
 CREATE TABLE IF NOT EXISTS plans (
@@ -42,6 +44,8 @@ CREATE TABLE IF NOT EXISTS learning_items (
     created_by INTEGER NOT NULL,
     status TEXT NOT NULL CHECK (status IN ('pending', 'approved', 'rejected')),
     created_at TEXT NOT NULL,
+    review_note TEXT,
+    reviewed_at TEXT,
     FOREIGN KEY (created_by) REFERENCES users(id)
 );
 
@@ -115,6 +119,10 @@ CREATE TABLE IF NOT EXISTS audit_events (
     event_type TEXT NOT NULL,
     details TEXT NOT NULL,
     created_at TEXT NOT NULL,
+    -- outcome and correlation_id were added later; initialize_database adds
+    -- them to older databases. correlation_id matches the X-Request-ID header.
+    outcome TEXT NOT NULL DEFAULT 'success' CHECK (outcome IN ('success', 'failure', 'denied')),
+    correlation_id TEXT,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
 );
 
@@ -176,3 +184,6 @@ CREATE INDEX IF NOT EXISTS idx_learning_items_status
 
 CREATE INDEX IF NOT EXISTS idx_audit_events_created
     ON audit_events(created_at DESC);
+
+-- idx_audit_events_correlation is created by initialize_database after it has
+-- added correlation_id to older databases.

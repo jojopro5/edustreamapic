@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import contextvars
 import hashlib
 import hmac
 import json
@@ -12,19 +13,22 @@ import sqlite3
 import threading
 import time
 import traceback
+import uuid
 from datetime import UTC, datetime, timedelta
 from http import HTTPStatus
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
+import accounts
 import uploads
 
 from quizzes import QUIZZES, public_quiz
 import backups
 import assessments
 import feedback
+import operations
 
 
 ROOT = Path(__file__).resolve().parent
@@ -42,6 +46,32 @@ LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 LOGIN_WINDOW_SECONDS = 15 * 60
 LOGIN_MAX_FAILURES_PER_ACCOUNT = 5
 LOGIN_MAX_FAILURES_PER_CLIENT = 20
+
+# Each request gets a correlation ID. It is returned as X-Request-ID and written
+# on every audit event the request causes, so one action can be traced end to end.
+CORRELATION_ID: contextvars.ContextVar[str | None] = contextvars.ContextVar("correlation_id", default=None)
+REQUEST_ID_PATTERN = re.compile(r"[A-Za-z0-9_-]{8,64}")
+AUDIT_OUTCOMES = ("success", "failure", "denied")
+REGISTRATION_THROTTLE = accounts.RegistrationThrottle()
+# Fictitious payment methods for the billing simulation. No card data is ever accepted.
+SIMULATED_PAYMENT_METHODS = ("test-card-approve", "test-card-decline")
+
+
+class _DiscardBody:
+    """Stands in for wfile after the headers of a HEAD response."""
+
+    def __init__(self, wfile):
+        self._wfile = wfile
+
+    def write(self, data) -> int:
+        return len(data)
+
+    def flush(self) -> None:
+        self._wfile.flush()
+
+    def __getattr__(self, name):
+        # closed, close() and the rest still reach the real socket file.
+        return getattr(self._wfile, name)
 
 
 class ClosingConnection(sqlite3.Connection):
@@ -204,20 +234,92 @@ def initialize_database(reset: bool = False) -> None:
         DB_PATH.unlink()
     with connect_db() as connection:
         connection.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
+        user_columns = {row["name"] for row in connection.execute("PRAGMA table_info(users)")}
+        if "bio" not in user_columns:
+            connection.execute("ALTER TABLE users ADD COLUMN bio TEXT")
+        audit_columns = {row["name"] for row in connection.execute("PRAGMA table_info(audit_events)")}
+        if "outcome" not in audit_columns:
+            connection.execute(
+                "ALTER TABLE audit_events ADD COLUMN outcome TEXT NOT NULL DEFAULT 'success' "
+                "CHECK (outcome IN ('success', 'failure', 'denied'))"
+            )
+        if "correlation_id" not in audit_columns:
+            connection.execute("ALTER TABLE audit_events ADD COLUMN correlation_id TEXT")
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_audit_events_correlation ON audit_events(correlation_id)")
         columns = {row["name"] for row in connection.execute("PRAGMA table_info(learning_items)")}
         if "language" not in columns:
             # Existing curated courses are English; keep all records and progress.
             connection.execute(
                 "ALTER TABLE learning_items ADD COLUMN language TEXT NOT NULL DEFAULT 'en' CHECK (language IN ('en', 'id'))"
             )
+        # Review feedback for educators; older databases gain the columns in place.
+        for column in ("review_note", "reviewed_at"):
+            if column not in columns:
+                connection.execute(f"ALTER TABLE learning_items ADD COLUMN {column} TEXT")
         seed_database(connection)
 
 
-def record_audit(connection: sqlite3.Connection, user_id: int | None, event_type: str, details: str) -> None:
+def audit_outcome(event_type: str) -> str:
+    """Default outcome from the event name; callers may pass one explicitly."""
+    if any(word in event_type for word in ("denied", "refused", "rate_limited", "throttled", "blocked")):
+        return "denied"
+    if any(word in event_type for word in ("failed", "rejected")):
+        return "failure"
+    return "success"
+
+
+def record_audit(connection: sqlite3.Connection, user_id: int | None, event_type: str, details: str,
+                 outcome: str | None = None) -> None:
+    outcome = outcome or audit_outcome(event_type)
+    if outcome not in AUDIT_OUTCOMES:
+        raise ValueError(f"Unknown audit outcome: {outcome}")
     connection.execute(
-        "INSERT INTO audit_events (user_id, event_type, details, created_at) VALUES (?, ?, ?, ?)",
-        (user_id, event_type, details[:500], iso_now()),
+        """
+        INSERT INTO audit_events (user_id, event_type, details, created_at, outcome, correlation_id)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (user_id, event_type, details[:500], iso_now(), outcome, CORRELATION_ID.get()),
     )
+
+
+def pseudonym(email: str) -> str:
+    """Stable pseudonymous label for an email in audit details (no address stored)."""
+    return "acct-" + hashlib.sha256(email.strip().lower().encode("utf-8")).hexdigest()[:12]
+
+
+DEMO_ACCOUNTS = [
+    {"role": "learner", "email": "learner@edustream.local", "password": "Learn123!"},
+    {"role": "educator", "email": "educator@edustream.local", "password": "Teach123!"},
+    {"role": "admin", "email": "admin@edustream.local", "password": "Admin123!"},
+]
+CONTENT_TYPES = frozenset({"course", "video", "article", "quiz", "workshop"})
+
+
+def validated_content(body: dict) -> dict:
+    """Check the educator-editable fields of a learning item and return them cleaned."""
+    title = str(body.get("title", "")).strip()
+    category = str(body.get("category", "")).strip()
+    description = str(body.get("description", "")).strip()
+    content_type = str(body.get("content_type", "course")).strip().lower()
+    language = str(body.get("language", "en")).strip().lower()
+    try:
+        duration = int(body.get("duration_minutes", 0))
+    except (TypeError, ValueError):
+        duration = 0
+    if not 4 <= len(title) <= 100:
+        raise ValueError("Title must contain between 4 and 100 characters.")
+    if not 3 <= len(category) <= 40:
+        raise ValueError("Category must contain between 3 and 40 characters.")
+    if not 20 <= len(description) <= 500:
+        raise ValueError("Description must contain between 20 and 500 characters.")
+    if content_type not in CONTENT_TYPES:
+        raise ValueError("Select a supported content type.")
+    if language not in {"en", "id"}:
+        raise ValueError("Select English or Bahasa Indonesia as the content language.")
+    if not 5 <= duration <= 600:
+        raise ValueError("Duration must be between 5 and 600 minutes.")
+    return {"title": title, "category": category, "description": description,
+            "content_type": content_type, "language": language, "duration_minutes": duration}
 
 
 SUBSCRIPTION_PERIOD_DAYS = 30
@@ -414,6 +516,8 @@ class EduStreamHandler(BaseHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Frame-Options", "DENY")
         self.send_header("Referrer-Policy", "no-referrer")
+        if CORRELATION_ID.get():
+            self.send_header("X-Request-ID", CORRELATION_ID.get())
         self.send_header(
             "Content-Security-Policy",
             "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'",
@@ -485,6 +589,10 @@ class EduStreamHandler(BaseHTTPRequestHandler):
             self._error("Please sign in to continue.", HTTPStatus.UNAUTHORIZED)
             return None
         if roles and user["role"] not in roles:
+            with connect_db() as connection:
+                record_audit(connection, user["id"], "permission_denied",
+                             f"{self.command} {urlparse(self.path).path} needs {'/'.join(sorted(roles))}, account is {user['role']}")
+                connection.commit()
             self._error("Your account does not have permission for this action.", HTTPStatus.FORBIDDEN)
             return None
         return user
@@ -498,6 +606,10 @@ class EduStreamHandler(BaseHTTPRequestHandler):
             self.send_error(HTTPStatus.NOT_FOUND)
             return
         if not target.is_file():
+            if Path(relative).suffix:
+                # A missing asset is a real 404; only extensionless paths fall back to the app.
+                self._error("File not found.", HTTPStatus.NOT_FOUND)
+                return
             target = STATIC_ROOT / "index.html"
         data = target.read_bytes()
         content_type = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
@@ -509,8 +621,42 @@ class EduStreamHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def end_headers(self) -> None:
+        super().end_headers()
+        if self.command == "HEAD":
+            # A HEAD response carries the GET headers but never a body.
+            self.wfile = _DiscardBody(self.wfile)
+
+    def do_HEAD(self) -> None:
+        self._run_safely(self._handle_get)
+
+    def _cross_site_error(self, path: str) -> str | None:
+        """Reject state-changing requests that a browser sent from another site.
+
+        SameSite=Lax already keeps the session cookie off most cross-site POSTs; this is a
+        second layer for older browsers and sibling subdomains.
+        """
+        fetch_site = self.headers.get("Sec-Fetch-Site")
+        if fetch_site and fetch_site not in {"same-origin", "none"}:
+            return "Cross-site requests are not allowed."
+        origin = self.headers.get("Origin")
+        if origin is not None and (origin == "null" or urlparse(origin).netloc != self.headers.get("Host", "")):
+            return "Cross-site requests are not allowed."
+        if re.fullmatch(r"/api/content/\d+/attachment", path):
+            # File uploads are raw bytes; the custom header forces a CORS preflight.
+            if not self.headers.get("X-File-Name"):
+                return "File uploads must include the X-File-Name header."
+            return None
+        content_type = self.headers.get("Content-Type", "").split(";")[0].strip().lower()
+        if content_type != "application/json":
+            return "Requests must be sent as application/json."
+        return None
+
     def _run_safely(self, handler) -> None:
         """Answer with a JSON 500 instead of dropping the connection on an unexpected error."""
+        supplied = self.headers.get("X-Request-ID", "")
+        request_id = supplied if REQUEST_ID_PATTERN.fullmatch(supplied) else uuid.uuid4().hex[:16]
+        token = CORRELATION_ID.set(request_id)
         try:
             handler()
         except Exception:
@@ -519,6 +665,8 @@ class EduStreamHandler(BaseHTTPRequestHandler):
                 self._error("Something went wrong on the server. Please try again.", HTTPStatus.INTERNAL_SERVER_ERROR)
             except Exception:
                 pass
+        finally:
+            CORRELATION_ID.reset(token)
 
     def do_GET(self) -> None:
         self._run_safely(self._handle_get)
@@ -539,11 +687,37 @@ class EduStreamHandler(BaseHTTPRequestHandler):
                 self._json({"ok": True, "backups": backups.list_backups(DB_PATH)})
             return
 
+        if path == "/api/admin/audit":
+            user = self._require_user({"admin"})
+            if user:
+                try:
+                    self._audit_search(user, parse_qs(parsed.query))
+                except ValueError as exc:
+                    self._error(str(exc), HTTPStatus.BAD_REQUEST)
+            return
+
+        if path == "/api/admin/operations":
+            user = self._require_user({"admin"})
+            if user:
+                with connect_db() as connection:
+                    payload = operations.summary(connection)
+                self._json({"ok": True, **payload})
+            return
+
+        if path == "/api/profile":
+            user = self._require_user()
+            if user:
+                with connect_db() as connection:
+                    row = connection.execute("SELECT * FROM users WHERE id = ?", (user["id"],)).fetchone()
+                self._json({"ok": True, "profile": accounts.public_profile(row)})
+            return
+
         if path == "/api/session":
             user = self._current_user()
             with connect_db() as connection:
                 plans = offered_plans(connection)
-            self._json({"ok": True, "authenticated": bool(user), "user": user, "plans": plans})
+            demo = DEMO_ACCOUNTS if getattr(self.server, "demo_logins", True) else []
+            self._json({"ok": True, "authenticated": bool(user), "user": user, "plans": plans, "demo_accounts": demo})
             return
 
         if path == "/api/dashboard":
@@ -600,8 +774,10 @@ class EduStreamHandler(BaseHTTPRequestHandler):
                     (item_id,),
                 ).fetchone()
                 if not item or not has_entitlement(connection, user["id"], item_id):
-                    record_audit(connection, user["id"], "access_denied", f"Learning item {item_id}")
-                    connection.commit()
+                    if item:
+                        # Unknown ids are not logged, so probing ids cannot flood the audit log.
+                        record_audit(connection, user["id"], "access_denied", f"Learning item {item_id}")
+                        connection.commit()
                     self._error("This learning item is unavailable or not included in your active subscription.", HTTPStatus.FORBIDDEN)
                     return
                 record_audit(connection, user["id"], "content_accessed", f"Learning item {item_id}")
@@ -613,7 +789,7 @@ class EduStreamHandler(BaseHTTPRequestHandler):
                     "item": {**dict(item), "attachment": attachment},
                     "lesson": {
                         "heading": "Lesson available",
-                        "body": "Your entitlement was verified successfully. This prototype can now deliver the protected learning material.",
+                        "body": "Your plan includes this course. Work through the materials below, then record your study progress.",
                     },
                 }
             )
@@ -624,11 +800,36 @@ class EduStreamHandler(BaseHTTPRequestHandler):
     def _handle_post(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/") or "/"
+        cross_site = self._cross_site_error(path)
+        if cross_site:
+            with connect_db() as connection:
+                record_audit(connection, None, "request_blocked", f"POST {path}: {cross_site}")
+                connection.commit()
+            self._error(cross_site, HTTPStatus.FORBIDDEN)
+            return
         try:
             if path == "/api/login":
                 self._login(self._body())
                 return
+            if path == "/api/register":
+                self._register(self._body())
+                return
+            if path == "/api/profile":
+                user = self._require_user()
+                if user:
+                    self._update_profile(user, self._body())
+                return
+            if path == "/api/profile/password":
+                user = self._require_user()
+                if user:
+                    self._change_password(user, self._body())
+                return
             if path == "/api/logout":
+                user = self._current_user()
+                if user:
+                    with connect_db() as connection:
+                        record_audit(connection, user["id"], "logout", "Signed out")
+                        connection.commit()
                 delete_session(self._session_token())
                 self._json({"ok": True}, cookies=[self._session_cookie("", 0)])
                 return
@@ -689,6 +890,18 @@ class EduStreamHandler(BaseHTTPRequestHandler):
                 if user:
                     self._submit_quiz(user, int(match.group(1)), self._body())
                 return
+            match = re.fullmatch(r"/api/admin/content/(\d+)/takedown", path)
+            if match:
+                user = self._require_user({"admin"})
+                if user:
+                    self._take_down_content(user, int(match.group(1)), self._body())
+                return
+            match = re.fullmatch(r"/api/content/(\d+)/resubmit", path)
+            if match:
+                user = self._require_user({"educator"})
+                if user:
+                    self._resubmit_content(user, int(match.group(1)), self._body())
+                return
             match = re.fullmatch(r"/api/admin/content/(\d+)/review", path)
             if match:
                 user = self._require_user({"admin"})
@@ -721,6 +934,9 @@ class EduStreamHandler(BaseHTTPRequestHandler):
         client = self.client_address[0]
         wait = LOGIN_THROTTLE.retry_after(client, email)
         if wait:
+            with connect_db() as connection:
+                record_audit(connection, None, "login_throttled", f"Sign-in blocked for {pseudonym(email)}; retry after {wait}s")
+                connection.commit()
             self._json(
                 {"ok": False, "error": "Too many failed sign-in attempts. Please wait and try again."},
                 HTTPStatus.TOO_MANY_REQUESTS,
@@ -734,6 +950,9 @@ class EduStreamHandler(BaseHTTPRequestHandler):
             ).fetchone()
             if not user or not verify_password(password, user["password_salt"], user["password_hash"]):
                 LOGIN_THROTTLE.record_failure(client, email)
+                record_audit(connection, user["id"] if user else None, "login_failed",
+                             f"Wrong password for {pseudonym(email)}" if user else f"Unknown account {pseudonym(email)}")
+                connection.commit()
                 self._error("The email or password is incorrect.", HTTPStatus.UNAUTHORIZED)
                 return
             LOGIN_THROTTLE.record_success(client, email)
@@ -744,6 +963,87 @@ class EduStreamHandler(BaseHTTPRequestHandler):
             {"ok": True, "user": {"id": user["id"], "full_name": user["full_name"], "email": user["email"], "role": user["role"]}},
             cookies=[self._session_cookie(token, int(SESSION_TTL.total_seconds()))],
         )
+
+    def _register(self, body: dict) -> None:
+        """Create a learner account (never educator or admin) and sign it in."""
+        client = self.client_address[0]
+        try:
+            if not REGISTRATION_THROTTLE.allow(client):
+                with connect_db() as connection:
+                    record_audit(connection, None, "registration_throttled", "Too many new accounts from one client")
+                    connection.commit()
+                raise accounts.AccountError("Too many accounts were created from this device. Please try again later.", 429)
+            name = accounts.clean_name(body.get("full_name"))
+            email = accounts.clean_email(body.get("email"))
+            password = accounts.check_password(body.get("password"), email)
+        except accounts.AccountError as error:
+            self._error(str(error), error.status)
+            return
+        with connect_db() as connection:
+            if connection.execute("SELECT 1 FROM users WHERE email = ?", (email,)).fetchone():
+                record_audit(connection, None, "registration_rejected", f"Email already registered: {pseudonym(email)}")
+                connection.commit()
+                self._error("An account with this email already exists. Sign in instead.", HTTPStatus.CONFLICT)
+                return
+            salt, digest = make_password(password)
+            cursor = connection.execute(
+                "INSERT INTO users (full_name, email, password_salt, password_hash, role, created_at) VALUES (?, ?, ?, ?, 'learner', ?)",
+                (name, email, salt, digest, iso_now()),
+            )
+            user_id = cursor.lastrowid
+            REGISTRATION_THROTTLE.record(client)
+            token = create_session(connection, user_id)
+            record_audit(connection, user_id, "account_registered", f"New learner account {pseudonym(email)}")
+            connection.commit()
+        self._json(
+            {"ok": True, "message": "Your learner account is ready. Choose a plan to unlock courses.",
+             "user": {"id": user_id, "full_name": name, "email": email, "role": "learner"}},
+            HTTPStatus.CREATED,
+            cookies=[self._session_cookie(token, int(SESSION_TTL.total_seconds()))],
+        )
+
+    def _update_profile(self, user: dict, body: dict) -> None:
+        try:
+            name = accounts.clean_name(body.get("full_name"))
+            bio = accounts.clean_bio(body.get("bio")) if user["role"] == "educator" else ""
+            if user["role"] != "educator" and body.get("bio"):
+                raise accounts.AccountError("Only educator profiles have a bio.")
+        except accounts.AccountError as error:
+            self._error(str(error), error.status)
+            return
+        with connect_db() as connection:
+            connection.execute("UPDATE users SET full_name = ?, bio = ? WHERE id = ?", (name, bio or None, user["id"]))
+            record_audit(connection, user["id"], "profile_updated", "Name" + (" and bio" if user["role"] == "educator" else "") + " updated")
+            connection.commit()
+            row = connection.execute("SELECT * FROM users WHERE id = ?", (user["id"],)).fetchone()
+        self._json({"ok": True, "message": "Profile saved.", "profile": accounts.public_profile(row)})
+
+    def _change_password(self, user: dict, body: dict) -> None:
+        current = body.get("current_password")
+        with connect_db() as connection:
+            row = connection.execute("SELECT * FROM users WHERE id = ?", (user["id"],)).fetchone()
+            if not isinstance(current, str) or not verify_password(current, row["password_salt"], row["password_hash"]):
+                record_audit(connection, user["id"], "password_change_failed", "Current password did not match")
+                connection.commit()
+                self._error("Your current password is incorrect.", HTTPStatus.FORBIDDEN)
+                return
+            try:
+                new_password = accounts.check_password(body.get("new_password"), row["email"])
+                if new_password == current:
+                    raise accounts.AccountError("Choose a password you have not just used.")
+            except accounts.AccountError as error:
+                self._error(str(error), error.status)
+                return
+            salt, digest = make_password(new_password)
+            connection.execute("UPDATE users SET password_salt = ?, password_hash = ? WHERE id = ?", (salt, digest, user["id"]))
+            # End every other session for this account; keep the one making the change.
+            keep = hash_token(self._session_token() or "")
+            ended = connection.execute(
+                "DELETE FROM sessions WHERE user_id = ? AND token_hash != ?", (user["id"], keep)
+            ).rowcount
+            record_audit(connection, user["id"], "password_changed", f"Other sessions ended: {ended}")
+            connection.commit()
+        self._json({"ok": True, "message": "Password changed. You have been signed out everywhere else."})
 
     def _dashboard(self, user: dict) -> dict:
         with connect_db() as connection:
@@ -808,7 +1108,7 @@ class EduStreamHandler(BaseHTTPRequestHandler):
                     dict(row)
                     for row in connection.execute(
                         """
-                        SELECT id, title, category, description, content_type, language, duration_minutes, status, created_at
+                        SELECT id, title, category, description, content_type, language, duration_minutes, status, created_at, review_note
                         FROM learning_items WHERE created_by = ? ORDER BY id DESC
                         """,
                         (user["id"],),
@@ -843,11 +1143,21 @@ class EduStreamHandler(BaseHTTPRequestHandler):
             ]
             for item in pending_items:
                 item["attachment"] = uploads.public_info(uploads.file_record(connection, item["id"]))
+            published_items = [
+                dict(row)
+                for row in connection.execute(
+                    """
+                    SELECT li.id, li.title, li.category, li.created_at, u.full_name AS educator_name
+                    FROM learning_items li JOIN users u ON u.id = li.created_by
+                    WHERE li.status = 'approved' ORDER BY li.id DESC
+                    """
+                )
+            ]
             audit = [
                 dict(row)
                 for row in connection.execute(
                     """
-                    SELECT ae.id, ae.event_type, ae.details, ae.created_at,
+                    SELECT ae.id, ae.event_type, ae.details, ae.created_at, ae.outcome, ae.correlation_id,
                            COALESCE(u.full_name, 'System') AS user_name
                     FROM audit_events ae
                     LEFT JOIN users u ON u.id = ae.user_id
@@ -869,6 +1179,7 @@ class EduStreamHandler(BaseHTTPRequestHandler):
                 "role": "admin",
                 "user": user,
                 "pending_items": pending_items,
+                "published_items": published_items,
                 "audit": audit,
                 "feedback": feedback.admin_list(connection),
                 "plans": plans,
@@ -880,6 +1191,48 @@ class EduStreamHandler(BaseHTTPRequestHandler):
                     "pending_content": len(pending_items),
                 },
             }
+
+    def _audit_search(self, user: dict, query: dict) -> None:
+        """Filter audit events by type, outcome, correlation ID or account, newest first (max 200)."""
+        clauses, params = [], []
+        event_type = (query.get("event_type") or [""])[0].strip()
+        outcome = (query.get("outcome") or [""])[0].strip()
+        correlation_id = (query.get("correlation_id") or [""])[0].strip()
+        user_id = (query.get("user_id") or [""])[0].strip()
+        if event_type:
+            if not re.fullmatch(r"[a-z_]{2,40}", event_type):
+                raise ValueError("Event type may contain only lowercase letters and underscores.")
+            clauses.append("ae.event_type = ?")
+            params.append(event_type)
+        if outcome:
+            if outcome not in AUDIT_OUTCOMES:
+                raise ValueError("Outcome must be success, failure or denied.")
+            clauses.append("ae.outcome = ?")
+            params.append(outcome)
+        if correlation_id:
+            if not REQUEST_ID_PATTERN.fullmatch(correlation_id):
+                raise ValueError("Correlation ID is 8 to 64 letters, digits, dashes or underscores.")
+            clauses.append("ae.correlation_id = ?")
+            params.append(correlation_id)
+        if user_id:
+            if not user_id.isdigit():
+                raise ValueError("Account ID must be a number.")
+            clauses.append("ae.user_id = ?")
+            params.append(int(user_id))
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        with connect_db() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT ae.id, ae.user_id, ae.event_type, ae.details, ae.created_at, ae.outcome, ae.correlation_id,
+                       COALESCE(u.full_name, 'System') AS user_name
+                FROM audit_events ae LEFT JOIN users u ON u.id = ae.user_id
+                {where}
+                ORDER BY ae.id DESC LIMIT 200
+                """,
+                params,
+            ).fetchall()
+            types = [row[0] for row in connection.execute("SELECT DISTINCT event_type FROM audit_events ORDER BY event_type")]
+        self._json({"ok": True, "events": [dict(row) for row in rows], "event_types": types})
 
     def _assessment_request(self, user: dict, action: str = "overview", item_id: int | None = None,
                             attempt_id: int | None = None, body: dict | None = None) -> None:
@@ -1168,6 +1521,9 @@ class EduStreamHandler(BaseHTTPRequestHandler):
         except (TypeError, ValueError):
             raise ValueError("Select a valid subscription plan.")
         confirmed = body.get("confirm") is True
+        payment_method = body.get("payment_method", "test-card-approve")
+        if payment_method not in SIMULATED_PAYMENT_METHODS:
+            raise ValueError("Choose one of the simulated test cards.")
         with connect_db() as connection:
             plan = connection.execute("SELECT * FROM plans WHERE id = ?", (plan_id,)).fetchone()
             if not plan:
@@ -1192,6 +1548,26 @@ class EduStreamHandler(BaseHTTPRequestHandler):
             }
             if not confirmed:
                 self._json({"ok": True, "requires_confirmation": True, "quote": quote})
+                return
+            if payment_method == "test-card-decline":
+                # Record the failed attempt against a subscription row that never
+                # became active; the learner's current plan is left untouched.
+                cursor = connection.execute(
+                    """
+                    INSERT INTO subscriptions (user_id, plan_id, status, start_date, end_date, created_at)
+                    VALUES (?, ?, 'cancelled', ?, ?, ?)
+                    """,
+                    (user["id"], plan_id, today.isoformat(), today.isoformat(), iso_now()),
+                )
+                connection.execute(
+                    "INSERT INTO payments (user_id, subscription_id, amount, status, paid_at) VALUES (?, ?, ?, 'failed', ?)",
+                    (user["id"], cursor.lastrowid, plan["price_monthly"], iso_now()),
+                )
+                record_audit(connection, user["id"], "payment_failed",
+                             f"Simulated card declined for {plan['name']} ({action}); plan unchanged")
+                connection.commit()
+                self._json({"ok": False, "error": "The simulated card was declined. Your plan has not changed.", "quote": quote},
+                           HTTPStatus.PAYMENT_REQUIRED)
                 return
             connection.execute(
                 "UPDATE subscriptions SET status = 'cancelled' WHERE user_id = ? AND status = 'active'",
@@ -1222,27 +1598,7 @@ class EduStreamHandler(BaseHTTPRequestHandler):
         self._json({"ok": True, "message": message, "quote": quote})
 
     def _create_content(self, user: dict, body: dict) -> None:
-        title = str(body.get("title", "")).strip()
-        category = str(body.get("category", "")).strip()
-        description = str(body.get("description", "")).strip()
-        content_type = str(body.get("content_type", "course")).strip().lower()
-        language = str(body.get("language", "en")).strip().lower()
-        try:
-            duration = int(body.get("duration_minutes", 0))
-        except (TypeError, ValueError):
-            duration = 0
-        if not 4 <= len(title) <= 100:
-            raise ValueError("Title must contain between 4 and 100 characters.")
-        if not 3 <= len(category) <= 40:
-            raise ValueError("Category must contain between 3 and 40 characters.")
-        if not 20 <= len(description) <= 500:
-            raise ValueError("Description must contain between 20 and 500 characters.")
-        if content_type not in {"course", "video", "article", "quiz", "workshop"}:
-            raise ValueError("Select a supported content type.")
-        if language not in {"en", "id"}:
-            raise ValueError("Select English or Bahasa Indonesia as the content language.")
-        if not 5 <= duration <= 600:
-            raise ValueError("Duration must be between 5 and 600 minutes.")
+        fields = validated_content(body)
         status = "approved" if user["role"] == "admin" else "pending"
         with connect_db() as connection:
             cursor = connection.execute(
@@ -1251,33 +1607,98 @@ class EduStreamHandler(BaseHTTPRequestHandler):
                     (title, category, description, content_type, language, duration_minutes, created_by, status, created_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (title, category, description, content_type, language, duration, user["id"], status, iso_now()),
+                (fields["title"], fields["category"], fields["description"], fields["content_type"],
+                 fields["language"], fields["duration_minutes"], user["id"], status, iso_now()),
             )
             if status == "approved":
                 # Admin-published items skip review, so grant plan access here too.
                 grant_default_entitlements(connection, cursor.lastrowid)
-            record_audit(connection, user["id"], "content_created", f"Learning item {cursor.lastrowid}: {title} ({status})")
+            record_audit(connection, user["id"], "content_created", f"Learning item {cursor.lastrowid}: {fields['title']} ({status})")
             connection.commit()
         self._json({"ok": True, "message": "Content submitted for approval." if status == "pending" else "Content published.", "item_id": cursor.lastrowid})
+
+    def _resubmit_content(self, user: dict, item_id: int, body: dict) -> None:
+        """Let an educator edit a rejected item and send it back for review."""
+        fields = validated_content(body)
+        with connect_db() as connection:
+            item = connection.execute(
+                "SELECT id, status, created_by FROM learning_items WHERE id = ?", (item_id,)
+            ).fetchone()
+            if not item or item["created_by"] != user["id"]:
+                self._error("Learning item was not found.", HTTPStatus.NOT_FOUND)
+                return
+            if item["status"] != "rejected":
+                self._error("Only rejected items can be edited and resubmitted.", HTTPStatus.CONFLICT)
+                return
+            connection.execute(
+                """
+                UPDATE learning_items
+                SET title = ?, category = ?, description = ?, content_type = ?, language = ?,
+                    duration_minutes = ?, status = 'pending'
+                WHERE id = ?
+                """,
+                (fields["title"], fields["category"], fields["description"], fields["content_type"],
+                 fields["language"], fields["duration_minutes"], item_id),
+            )
+            record_audit(connection, user["id"], "content_resubmitted", f"Learning item {item_id}: {fields['title']}")
+            connection.commit()
+        self._json({"ok": True, "message": "Changes sent for review.", "item_id": item_id})
 
     def _review_content(self, user: dict, item_id: int, body: dict) -> None:
         decision = str(body.get("decision", "")).lower()
         if decision not in {"approved", "rejected"}:
             raise ValueError("Decision must be approved or rejected.")
+        reason = str(body.get("reason", "")).strip()
+        note = " ".join(str(body.get("note", "")).split())[:300]
+        if decision == "rejected" and not 10 <= len(reason) <= 500:
+            raise ValueError("Give the educator a reason for the rejection (10 to 500 characters).")
         with connect_db() as connection:
-            item = connection.execute("SELECT id, title FROM learning_items WHERE id = ?", (item_id,)).fetchone()
+            item = connection.execute("SELECT id, title, status FROM learning_items WHERE id = ?", (item_id,)).fetchone()
             if not item:
                 self._error("Learning item was not found.", HTTPStatus.NOT_FOUND)
                 return
-            connection.execute("UPDATE learning_items SET status = ? WHERE id = ?", (decision, item_id))
+            if item["status"] != "pending":
+                # Published or already rejected items are not re-reviewed from here, so a
+                # stale or scripted request cannot pull a live course away from learners.
+                self._error(f"This item was already {item['status']}. Only pending items can be reviewed.", HTTPStatus.CONFLICT)
+                return
+            connection.execute(
+                "UPDATE learning_items SET status = ?, review_note = ?, reviewed_at = ? WHERE id = ?",
+                (decision, reason if decision == "rejected" else None, iso_now(), item_id),
+            )
             if decision == "approved":
                 grant_default_entitlements(connection, item_id)
-            record_audit(connection, user["id"], "content_reviewed", f"{item['title']}: {decision}")
+            record_audit(connection, user["id"], "content_reviewed",
+                         f"Learning item {item_id} ({item['title']}): {item['status']} -> {decision}"
+                         + (f"; reason: {reason}" if decision == "rejected" else (f"; note: {note}" if note else "")))
             connection.commit()
         self._json({"ok": True, "message": f"Content {decision}."})
 
+    def _take_down_content(self, user: dict, item_id: int, body: dict) -> None:
+        """Unpublish an approved item with a recorded reason (moderation, T2/T4)."""
+        reason = body.get("reason")
+        if not isinstance(reason, str) or not 5 <= len(reason.strip()) <= 300:
+            raise ValueError("Give a reason of 5 to 300 characters for taking this item down.")
+        reason = " ".join(reason.split())
+        with connect_db() as connection:
+            item = connection.execute("SELECT id, title, status FROM learning_items WHERE id = ?", (item_id,)).fetchone()
+            if not item:
+                self._error("Learning item was not found.", HTTPStatus.NOT_FOUND)
+                return
+            if item["status"] != "approved":
+                self._error("Only published items can be taken down.", HTTPStatus.CONFLICT)
+                return
+            connection.execute(
+                "UPDATE learning_items SET status = 'rejected', review_note = ?, reviewed_at = ? WHERE id = ?",
+                (f"Taken down: {reason}", iso_now(), item_id),
+            )
+            record_audit(connection, user["id"], "content_taken_down",
+                         f"Learning item {item_id} ({item['title']}): approved -> rejected; reason: {reason}")
+            connection.commit()
+        self._json({"ok": True, "message": "Item taken down. Learners can no longer see or open it."})
+
     def _create_backup(self, user: dict) -> None:
-        ref = secrets.token_hex(4)
+        ref = CORRELATION_ID.get() or secrets.token_hex(4)
         try:
             manifest = backups.create_backup(DB_PATH, f"{user['full_name']} (user {user['id']})")
         except (OSError, sqlite3.Error, backups.BackupError) as exc:
@@ -1293,7 +1714,7 @@ class EduStreamHandler(BaseHTTPRequestHandler):
         self._json({"ok": True, "message": "Backup created and verified.", "backup": manifest["file"]})
 
     def _verify_backup(self, user: dict, name: str) -> None:
-        ref = secrets.token_hex(4)
+        ref = CORRELATION_ID.get() or secrets.token_hex(4)
         if not backups.exists(DB_PATH, name):
             self._error("Backup was not found.", HTTPStatus.NOT_FOUND)
             return
@@ -1308,7 +1729,7 @@ class EduStreamHandler(BaseHTTPRequestHandler):
         self._json({"ok": True, "name": name, "valid": result["ok"], "problems": result["problems"]})
 
     def _restore_backup(self, user: dict, name: str, body: dict) -> None:
-        ref = secrets.token_hex(4)
+        ref = CORRELATION_ID.get() or secrets.token_hex(4)
         if body.get("confirm") != name:
             raise ValueError("Type the backup name to confirm the restore.")
         if not backups.exists(DB_PATH, name):
@@ -1355,6 +1776,12 @@ def main() -> None:
         default=os.environ.get("EDUSTREAM_SECURE_COOKIES", "auto"),
         help="Mark the session cookie Secure (HTTPS only). 'auto' turns it on unless --host is a loopback address.",
     )
+    parser.add_argument(
+        "--demo-logins",
+        choices=("on", "off"),
+        default=os.environ.get("EDUSTREAM_DEMO_LOGINS", "on"),
+        help="Show the one-click demo account buttons on the sign-in page. Turn off for any public deployment.",
+    )
     args = parser.parse_args()
 
     initialize_database(reset=args.reset)
@@ -1363,6 +1790,7 @@ def main() -> None:
         server.secure_cookies = not is_loopback_host(args.host)
     else:
         server.secure_cookies = args.secure_cookies == "on"
+    server.demo_logins = args.demo_logins == "on"
     if server.secure_cookies:
         print("Session cookies are marked Secure: serve the site over HTTPS (for example behind a TLS proxy).")
     print(f"EduStream is running at http://{args.host}:{args.port}")

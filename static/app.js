@@ -1,4 +1,5 @@
 const state = {
+  demoAccounts: [], editingItem: null,
   user: null, dashboard: null, view: "overview", activeItem: null, subjectId: null,
   filter: "all", accessFilter: "all", learningFilter: "all", query: "", sort: "default", signingIn: false
 };
@@ -79,7 +80,9 @@ const NAV = {
   educator: [["overview", "home", "Overview"], ["studio", "plus", "Content studio"], ["content", "layers", "My content"]],
   admin: [["overview", "home", "Overview"], ["approvals", "shield", "Approval queue"], ["feedback", "users", "Learner feedback"], ["audit", "audit", "Audit reports"]]
 };
+NAV.admin.splice(1, 0, ["operations", "trend", "Operations"]);
 NAV.admin.push(["backups", "layers", "Backup & recovery"]);
+for (const role of Object.keys(NAV)) NAV[role].push(["profile", "users", "My profile"]);
 function setupShell() {
   $("#login-screen").classList.add("hidden");
   $("#app-shell").classList.remove("hidden");
@@ -103,7 +106,7 @@ function renderSidebar() {
   const d = state.dashboard;
   const learner = state.user.role === "learner";
   const heading = learner ? (d.subscription?.plan_name || "Choose your") + " plan" : state.user.role === "educator" ? "Ready to share?" : "Keep content safe";
-  const body = learner ? d.stats.available + " courses included. Make room for your next skill." : state.user.role === "educator" ? "Create a resource and send it for review." : d.stats.pending_content + " resources are waiting for your review.";
+  const body = learner ? d.stats.available + " courses included. Make room for your next skill." : state.user.role === "educator" ? "Create a resource and send it for review." : d.stats.pending_content + (d.stats.pending_content === 1 ? " resource is" : " resources are") + " waiting for your review.";
   const view = learner ? "subscription" : state.user.role === "educator" ? "studio" : "approvals";
   $("#sidebar-support").innerHTML = icon(learner ? "layers" : "shield", "sidebar-card-icon") + '<span class="sidebar-card-label">' + (learner ? "YOUR SUBSCRIPTION" : "NEXT STEP") + '</span><strong>' + escapeHtml(heading) + '</strong><p>' + escapeHtml(body) + '</p><button class="sidebar-cta" type="button">' + (learner ? "Manage plan" : "Open workspace") + icon("chevron") + '</button>';
   $("#sidebar-support button").addEventListener("click", () => changeView(view));
@@ -127,6 +130,7 @@ function restoreViewFromHash(savedHash) {
 }
 function changeView(view) {
   if (!NAV[state.user.role].some(([name]) => name === view)) return;
+  state.editingItem = null;
   state.view = view; renderNav(); render(); closeMenu();
   $("#app-content").focus({ preventScroll: true });
   window.scrollTo({ top: 0, behavior: "instant" });
@@ -160,13 +164,19 @@ function render() {
   const views = {
     learner: { overview: learnerOverview, learning: learnerLearning, library: learnerLibrary, subject: learnerSubject, subscription: learnerSubscription },
     educator: { overview: educatorOverview, studio: educatorStudio, content: educatorContent },
-    admin: { overview: adminOverview, approvals: adminApprovals, feedback: adminFeedback, audit: adminAudit }
+    admin: { overview: adminOverview, approvals: adminApprovals, feedback: adminFeedback, audit: adminAuditSearch }
   };
   views.admin.backups = adminBackups;
+  views.admin.operations = adminOperations;
+  for (const role of Object.keys(views)) views[role].profile = profileView;
   $("#app-content").innerHTML = (views[state.user.role][state.view] || views[state.user.role].overview)();
   if ($("#moderation-list")) renderModerationList($("#moderation-list"), state.dashboard.feedback || [], message => loadDashboard(message));
   bindViewEvents();
   if ($("#backup-list")) bindBackupView();
+  if ($("#audit-filters")) bindAuditSearch();
+  if ($("#profile-form")) bindProfileView();
+  if ($("#ops-issues")) bindOperations();
+  if ($("#published-panel")) renderPublishedList($("#published-panel"), state.dashboard.published_items || []);
 }
 function learnerOverview() {
   setPage("Overview", "Learner workspace");
@@ -312,7 +322,7 @@ function educatorContent() {
 }
 function contentTable(items) {
   if (!items.length) return emptyState("Your first resource starts here", "Create a learning item in Content Studio to get started.", "layers");
-  return '<div class="table-wrap"><table class="data-table"><thead><tr><th scope="col">Resource</th><th scope="col">Format</th><th scope="col">Duration</th><th scope="col">Language</th><th scope="col">Status</th><th scope="col">Created</th></tr></thead><tbody>' + items.map(item => '<tr><td><div class="resource-cell"><span class="resource-icon theme-' + courseTheme(item).colour + '">' + icon(courseTheme(item).icon) + '</span><span><strong>' + escapeHtml(item.title) + '</strong><span class="muted">' + escapeHtml(item.category) + '</span>' + attachmentLink(item) + '</span></div></td><td>' + titleCase(item.content_type) + '</td><td>' + item.duration_minutes + ' min</td><td>' + (item.language === 'id' ? 'Bahasa Indonesia' : 'English') + '</td><td>' + statusBadge(item.status) + '</td><td>' + formatDate(item.created_at) + '</td></tr>').join("") + '</tbody></table></div>';
+  return '<div class="table-wrap"><table class="data-table"><thead><tr><th scope="col">Resource</th><th scope="col">Format</th><th scope="col">Duration</th><th scope="col">Language</th><th scope="col">Status</th><th scope="col">Created</th></tr></thead><tbody>' + items.map(item => '<tr><td><div class="resource-cell"><span class="resource-icon theme-' + courseTheme(item).colour + '">' + icon(courseTheme(item).icon) + '</span><span><strong>' + escapeHtml(item.title) + '</strong><span class="muted">' + escapeHtml(item.category) + '</span>' + attachmentLink(item) + '</span></div></td><td>' + titleCase(item.content_type) + '</td><td>' + item.duration_minutes + ' min</td><td>' + (item.language === 'id' ? 'Bahasa Indonesia' : 'English') + '</td><td>' + statusBadge(item.status) + (item.status === "rejected" ? (item.review_note ? '<p class="review-note"><strong>Reviewer:</strong> ' + escapeHtml(item.review_note) + '</p>' : '') + '<button class="text-link edit-item-link" type="button" data-edit-item="' + item.id + '">Edit and resubmit ' + icon("chevron") + '</button>' : '') + '</td><td>' + formatDate(item.created_at) + '</td></tr>').join("") + '</tbody></table></div>';
 }
 function adminOverview() {
   setPage("Overview", "Administrator workspace");
@@ -323,7 +333,7 @@ function adminOverview() {
 }
 function adminApprovals() {
   setPage("Approval queue", "Administrator workspace");
-  return hero("CONTENT REVIEW", "Good learning begins with a review.", "Read the resource details before deciding whether it is ready for learners.") + '<section class="panel"><div class="panel-header"><div><h2>Pending resources</h2><p>' + state.dashboard.pending_items.length + (state.dashboard.pending_items.length === 1 ? ' item needs' : ' items need') + ' a publication decision</p></div>' + statusBadge("pending") + '</div>' + approvalList(state.dashboard.pending_items) + '</section>';
+  return hero("CONTENT REVIEW", "Good learning begins with a review.", "Read the resource details before deciding whether it is ready for learners.") + '<section class="panel"><div class="panel-header"><div><h2>Pending resources</h2><p>' + state.dashboard.pending_items.length + (state.dashboard.pending_items.length === 1 ? ' item needs' : ' items need') + ' a publication decision</p></div>' + statusBadge("pending") + '</div>' + approvalList(state.dashboard.pending_items) + '</section><section id="published-panel" class="panel published-panel" aria-label="Published resources"></section>';
 }
 function approvalList(items) {
   if (!items.length) return emptyState("You're all caught up", "New educator submissions will appear here for your review.", "shield");
@@ -334,11 +344,6 @@ function adminFeedback() {
   const entries = state.dashboard.feedback || [];
   const hidden = entries.filter(entry => entry.status === "hidden").length;
   return hero("MODERATION", "Keep course discussion useful and safe.", "Hide a comment that breaks the rules. Hidden comments stay here for the record and can be restored.") + '<section class="panel"><div class="panel-header"><div><h2>Recent feedback</h2><p>' + entries.length + ' most recent comments · ' + hidden + ' hidden</p></div></div><div id="moderation-list" class="moderation-list"></div></section>';
-}
-function adminAudit() {
-  setPage("Audit reports", "Administrator workspace");
-  return hero("PLATFORM ACTIVITY", "A clear record of what happened.", "Follow account access, subscription changes, learning progress, and publication decisions.") + '<section class="panel"><div class="panel-header"><div><h2>Event log</h2><p>The 30 most recent recorded events</p></div><span class="badge neutral">' + state.dashboard.audit.length + ' events</span></div><div class="audit-list">' +
-    (state.dashboard.audit.map(event => '<div class="audit-row"><span class="activity-icon ' + (event.event_type.includes("denied") ? 'theme-red' : '') + '">' + icon(event.event_type.includes("denied") ? "lock" : "audit") + '</span><div><strong>' + escapeHtml(titleCase(event.event_type)) + '</strong><p>' + escapeHtml(event.details) + '</p></div><span class="audit-user">' + escapeHtml(event.user_name) + '</span><time>' + formatDate(event.created_at) + '<small>' + formatTime(event.created_at) + '</small></time></div>').join("") || emptyState("No events recorded", "New activity will be shown here.", "audit")) + '</div></section>';
 }
 function adminBackups() {
   setPage("Backup & recovery", "Administrator workspace");
@@ -379,8 +384,35 @@ function bindViewEvents() {
   if (state.view === "library") $("#results-count").textContent = filteredItems().length + (filteredItems().length === 1 ? " course" : " courses");
   $$("[data-plan-id]").forEach(button => button.addEventListener("click", () => changePlan(Number(button.dataset.planId), button)));
   $$("[data-review-id]").forEach(button => button.addEventListener("click", () => reviewContent(Number(button.dataset.reviewId), button.dataset.decision, button)));
+  $$("[data-edit-item]").forEach(button => button.addEventListener("click", () => editRejectedItem(Number(button.dataset.editItem))));
   $("#content-form")?.addEventListener("submit", submitContent);
-  if ($("#content-form")) addAttachmentField($("#content-form"));
+  if ($("#content-form")) { addAttachmentField($("#content-form")); fillEditForm(); }
+}
+function editRejectedItem(itemId) {
+  changeView("studio");
+  state.editingItem = state.dashboard.items.find(item => item.id === itemId) || null;
+  render();
+}
+function fillEditForm() {
+  const item = state.editingItem;
+  if (!item) return;
+  const form = $("#content-form");
+  for (const name of ["title", "category", "description", "content_type", "language", "duration_minutes"]) {
+    if (form.elements[name]) form.elements[name].value = item[name];
+  }
+  const panelTitle = form.closest(".panel")?.querySelector(".panel-header h2");
+  if (panelTitle) panelTitle.textContent = "Edit and resubmit";
+  const note = form.closest(".panel")?.querySelector(".panel-header p");
+  if (note) note.textContent = item.review_note ? "Reviewer: " + item.review_note : "Update the details, then send it back for review.";
+  const submit = form.querySelector('[type="submit"]');
+  if (submit) submit.textContent = "Resubmit for review";
+}
+function renderLessonMaterials(item) {
+  const guide = getCourseGuide(item);
+  const videos = topicVideos(guide);
+  $("#dialog-materials").innerHTML = '<h3 id="lesson-materials-title">Course materials</h3><p class="muted">' + escapeHtml(guide.introduction) + '</p>' +
+    (guide.skills?.length ? '<ul class="lesson-outcomes">' + guide.skills.map(skill => '<li>' + icon("check") + '<span>' + escapeHtml(skill) + '</span></li>').join("") + '</ul>' : '') +
+    '<ol class="lesson-steps">' + videos.map((video, index) => '<li><a href="' + escapeHtml(video.url) + '" target="_blank" rel="noopener noreferrer"><span class="lesson-step-number">' + (index + 1) + '</span><span><strong>' + escapeHtml(video.title) + '</strong><small>' + escapeHtml(video.creator || "") + (video.topic ? ' · ' + escapeHtml(video.topic) : '') + '</small></span><span class="sr-only"> (opens in a new tab)</span></a></li>').join("") + '</ol>';
 }
 async function openLesson(itemId, button) {
   setLoading(button, true, "Opening…");
@@ -391,6 +423,7 @@ async function openLesson(itemId, button) {
     $("#dialog-title").textContent = data.item.title;
     $("#dialog-description").textContent = data.item.description;
     $("#dialog-body").textContent = data.lesson.body;
+    renderLessonMaterials({ ...item, ...data.item });
     $("#dialog-metadata").textContent = data.item.category + " · " + data.item.duration_minutes + " minutes";
     showLessonAttachment(data.item);
     $("#dialog-error").textContent = "";
@@ -438,6 +471,7 @@ function showPlanConfirmation(quote) {
     ? "Your " + quote.days_kept + " remaining paid " + (quote.days_kept === 1 ? "day is" : "days are") + " kept: the 30 new days are added after your current end date. Demo billing only, no money is charged."
     : "Demo billing only, no money is charged.";
   $("#plan-dialog-error").textContent = "";
+  $("#plan-dialog-method").value = "test-card-approve";
   $("#plan-dialog").showModal();
   $("#plan-dialog-cancel").focus();
 }
@@ -447,7 +481,7 @@ async function confirmPlan(button) {
   setLoading(button, true, "Confirming…");
   $("#plan-dialog-error").textContent = "";
   try {
-    const data = await api("/api/subscription", { method: "POST", body: JSON.stringify({ plan_id: quote.plan_id, confirm: true }) });
+    const data = await api("/api/subscription", { method: "POST", body: JSON.stringify({ plan_id: quote.plan_id, confirm: true, payment_method: $("#plan-dialog-method").value }) });
     state.pendingPlan = null;
     $("#plan-dialog").close();
     await loadDashboard(data.message);
@@ -465,7 +499,9 @@ async function submitContent(event) {
     const fileProblem = file ? checkAttachment(file) : "";
     if (fileProblem) { toast(fileProblem, true); return; }
     payload.duration_minutes = Number(payload.duration_minutes);
-    const data = await api("/api/content", { method: "POST", body: JSON.stringify(payload) });
+    const editing = state.editingItem;
+    const data = await api(editing ? "/api/content/" + editing.id + "/resubmit" : "/api/content", { method: "POST", body: JSON.stringify(payload) });
+    state.editingItem = null;
     let message = data.message;
     if (file) {
       try { await uploadAttachment(data.item_id, file); message += " File attached."; }
@@ -476,8 +512,34 @@ async function submitContent(event) {
   } catch (error) { toast(error.message, true); }
   finally { setLoading(button, false); }
 }
+let rejectReturnFocus = null;
+function askRejectReason(itemId, button) {
+  const item = state.dashboard.pending_items.find(entry => entry.id === itemId);
+  const dialog = $("#reject-dialog");
+  dialog.dataset.itemId = itemId;
+  rejectReturnFocus = button;
+  $("#reject-item").textContent = item ? item.title + " · " + item.educator_name : "";
+  $("#reject-reason").value = ""; $("#reject-error").textContent = "";
+  dialog.showModal();
+  $("#reject-reason").focus();
+}
+async function confirmReject(event) {
+  event.preventDefault();
+  const reason = $("#reject-reason").value.trim();
+  if (reason.length < 10) { $("#reject-error").textContent = "Write at least 10 characters so the educator knows what to change."; return; }
+  const button = $("#reject-confirm");
+  setLoading(button, true, "Rejecting…");
+  try {
+    const data = await api("/api/admin/content/" + $("#reject-dialog").dataset.itemId + "/review", { method: "POST", body: JSON.stringify({ decision: "rejected", reason }) });
+    rejectReturnFocus = null;
+    $("#reject-dialog").close();
+    await loadDashboard(data.message);
+  } catch (error) { $("#reject-error").textContent = error.message; }
+  finally { setLoading(button, false); }
+}
 async function reviewContent(itemId, decision, button) {
-  setLoading(button, true, decision === "approved" ? "Approving…" : "Rejecting…");
+  if (decision === "rejected") { askRejectReason(itemId, button); return; }
+  setLoading(button, true, "Approving…");
   try {
     const data = await api("/api/admin/content/" + itemId + "/review", { method: "POST", body: JSON.stringify({ decision }) });
     await loadDashboard(data.message);
@@ -549,6 +611,9 @@ async function initialise() {
   });
   $(".sidebar-brand").addEventListener("click", event => { event.preventDefault(); if (state.user) changeView("overview"); });
   $("#close-dialog").addEventListener("click", () => $("#lesson-dialog").close());
+  $("#reject-form").addEventListener("submit", confirmReject);
+  $("#reject-cancel").addEventListener("click", () => $("#reject-dialog").close());
+  $("#reject-dialog").addEventListener("close", () => { if (rejectReturnFocus?.isConnected) rejectReturnFocus.focus(); });
   $("#plan-dialog-close").addEventListener("click", () => $("#plan-dialog").close());
   $("#plan-dialog-cancel").addEventListener("click", () => $("#plan-dialog").close());
   $("#plan-dialog-confirm").addEventListener("click", event => confirmPlan(event.currentTarget));
@@ -562,8 +627,9 @@ async function initialise() {
     event.currentTarget.setAttribute("aria-label", input.type === "password" ? "Show password" : "Hide password");
   });
   $$(".demo-account").forEach(button => button.addEventListener("click", () => {
-    if (state.signingIn) return;
-    $("#email").value = button.dataset.email; $("#password").value = button.dataset.password;
+    const account = state.demoAccounts.find(entry => entry.role === button.dataset.role);
+    if (state.signingIn || !account) return;
+    $("#email").value = account.email; $("#password").value = account.password;
     $("#login-form").requestSubmit();
   }));
   window.addEventListener("hashchange", () => {
@@ -572,6 +638,8 @@ async function initialise() {
   });
   try {
     const session = await api("/api/session");
+    state.demoAccounts = session.demo_accounts || [];
+    $("#demo-logins").classList.toggle("hidden", !state.demoAccounts.length);
     if (session.authenticated) {
       const savedHash = location.hash;
       state.user = session.user; await loadDashboard();

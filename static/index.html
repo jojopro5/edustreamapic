@@ -12,6 +12,8 @@
   <link rel="stylesheet" href="/backups.css">
   <link rel="stylesheet" href="/quiz.css">
   <link rel="stylesheet" href="/feedback.css">
+  <link rel="stylesheet" href="/operations.css">
+  <link rel="stylesheet" href="/profile.css">
 </head>
 <body>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
@@ -61,18 +63,34 @@
           </div>
           <button class="button primary full" type="submit"><span>Sign in to your workspace</span></button>
         </form>
+        <p class="register-toggle">New to EduStream? <button id="show-register" type="button" class="link-button" aria-expanded="false" aria-controls="register-form">Create a learner account</button></p>
+        <form id="register-form" class="register-form hidden" novalidate>
+          <h3>Create a learner account</h3>
+          <p class="muted">Educator and administrator accounts are set up by an administrator.</p>
+          <label for="register-name">Full name</label>
+          <input id="register-name" name="full_name" autocomplete="name" minlength="2" maxlength="80" required>
+          <label for="register-email">Email address</label>
+          <input id="register-email" name="email" type="email" autocomplete="email" maxlength="254" required>
+          <label for="register-password">Password</label>
+          <input id="register-password" name="password" type="password" autocomplete="new-password" minlength="10" maxlength="128" required aria-describedby="register-password-help">
+          <p id="register-password-help" class="helper">At least 10 characters. A short phrase is easy to remember. Use a made-up password for this prototype.</p>
+          <p id="register-error" class="inline-error" role="alert"></p>
+          <button class="button secondary full" type="submit">Create account</button>
+        </form>
+        <div id="demo-logins" class="hidden">
         <div class="divider"><span>Explore the prototype</span></div>
         <p class="role-help">Choose a role to try its workspace.</p>
         <div class="demo-grid" aria-label="Try a demo workspace">
-          <button type="button" class="demo-account" data-email="learner@edustream.local" data-password="Learn123!">
+          <button type="button" class="demo-account" data-role="learner">
             <span class="demo-icon blue" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m3 9 9-5 9 5-9 5-9-5Zm4 3v5c3 2 7 2 10 0v-5M21 9v7"/></svg></span><span><strong>Learner</strong><small>Browse &amp; learn</small></span>
           </button>
-          <button type="button" class="demo-account" data-email="educator@edustream.local" data-password="Teach123!">
+          <button type="button" class="demo-account" data-role="educator">
             <span class="demo-icon aqua" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 6c-3-2-7-2-10 0v14c3-2 7-2 10 0 3-2 7-2 10 0V6c-3-2-7-2-10 0Zm0 0v14M5 10h3M16 10h3"/></svg></span><span><strong>Educator</strong><small>Create content</small></span>
           </button>
-          <button type="button" class="demo-account" data-email="admin@edustream.local" data-password="Admin123!">
+          <button type="button" class="demo-account" data-role="admin">
             <span class="demo-icon navy" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m12 3 8 3v6c0 5-4 8-8 10-4-2-8-5-8-10V6l8-3Zm-4 9 3 3 5-6"/></svg></span><span><strong>Admin</strong><small>Review &amp; audit</small></span>
           </button>
+        </div>
         </div>
         <p class="security-note"><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="7.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M10 9v5M10 6v1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg> This prototype uses demo accounts and simulated subscriptions.</p>
       </div>
@@ -124,6 +142,7 @@
     <p id="dialog-metadata" class="dialog-metadata"></p>
     <p id="dialog-description" class="muted"></p>
     <div class="verified-box"><div><strong>✓ Access verified</strong><p id="dialog-body"></p></div></div>
+    <section id="dialog-materials" class="lesson-materials" aria-labelledby="lesson-materials-title"></section>
     <p id="dialog-attachment" class="dialog-attachment hidden"><a id="dialog-attachment-link" class="button secondary small" href="#" download></a></p>
     <p class="muted">Study progress records your learning activity. Course completion requires passing all module quizzes and the final assessment.</p><label for="progress-slider">Update study progress</label>
     <div class="progress-update">
@@ -158,6 +177,12 @@
       <div><dt>Access will end</dt><dd id="plan-dialog-new-end"></dd></div>
     </dl>
     <p id="plan-dialog-note" class="muted"></p>
+    <label for="plan-dialog-method">Simulated payment method</label>
+    <select id="plan-dialog-method" aria-describedby="plan-dialog-method-help">
+      <option value="test-card-approve">Test card that approves</option>
+      <option value="test-card-decline">Test card that declines</option>
+    </select>
+    <p id="plan-dialog-method-help" class="helper">No real card details are ever asked for. Choose the declining card to demonstrate a failed payment.</p>
     <div class="plan-dialog-actions">
       <button id="plan-dialog-cancel" class="button ghost" type="button">Cancel</button>
       <button id="plan-dialog-confirm" class="button primary" type="button">Confirm and pay</button>
@@ -171,12 +196,29 @@
     </header>
     <div id="quiz-content"></div>
   </dialog>
+  <dialog id="reject-dialog" class="lesson-dialog reject-dialog" aria-labelledby="reject-title">
+    <form id="reject-form" method="dialog">
+      <span class="eyebrow">REJECT SUBMISSION</span>
+      <h2 id="reject-title">Tell the educator what to change</h2>
+      <p id="reject-item" class="muted"></p>
+      <label for="reject-reason">Reason for rejection</label>
+      <textarea id="reject-reason" name="reason" rows="4" minlength="10" maxlength="500" required placeholder="e.g. The description needs a clear learning outcome."></textarea>
+      <p class="field-hint">10 to 500 characters. The educator sees this and can edit and resubmit.</p>
+      <p id="reject-error" class="inline-error" role="alert"></p>
+      <div class="plan-dialog-actions">
+        <button id="reject-cancel" type="button" class="button ghost">Cancel</button>
+        <button id="reject-confirm" type="submit" class="button danger">Reject submission</button>
+      </div>
+    </form>
+  </dialog>
   <div id="mobile-overlay" class="mobile-overlay"></div>
   <script src="/backups.js" defer></script>
   <script src="/course-guides.js" defer></script>
   <script src="/uploads.js" defer></script>
   <script src="/quiz.js" defer></script>
   <script src="/feedback.js" defer></script>
+  <script src="/operations.js" defer></script>
+  <script src="/profile.js" defer></script>
   <script src="/app.js" defer></script>
 </body>
 </html>
