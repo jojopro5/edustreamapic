@@ -18,6 +18,7 @@ from urllib.parse import unquote, urlparse
 
 from quizzes import QUIZZES, public_quiz
 import assessments
+import backups
 
 
 ROOT = Path(__file__).resolve().parent
@@ -386,6 +387,12 @@ class EduStreamHandler(BaseHTTPRequestHandler):
             self._json({"ok": True, **self._dashboard(user)})
             return
 
+        if path == "/api/admin/backups":
+            user = self._require_user({"admin"})
+            if user:
+                self._json({"ok": True, "backups": backups.list_backups(DB_PATH)})
+            return
+
         match = re.fullmatch(r"/api/assessments/(\d+)", path)
         if match:
             user = self._require_user({"learner"})
@@ -493,6 +500,20 @@ class EduStreamHandler(BaseHTTPRequestHandler):
                 user = self._require_user({"admin"})
                 if user:
                     self._review_content(user, int(match.group(1)), self._body())
+                return
+            if path == "/api/admin/backups":
+                user = self._require_user({"admin"})
+                if user:
+                    self._create_backup(user)
+                return
+            match = re.fullmatch(r"/api/admin/backups/([A-Za-z0-9.-]{1,80})/(verify|restore)", path)
+            if match:
+                user = self._require_user({"admin"})
+                if user:
+                    if match.group(2) == "verify":
+                        self._verify_backup(user, match.group(1))
+                    else:
+                        self._restore_backup(user, match.group(1), self._body())
                 return
             self._error("API endpoint not found.", HTTPStatus.NOT_FOUND)
         except ValueError as exc:
@@ -871,6 +892,73 @@ class EduStreamHandler(BaseHTTPRequestHandler):
             record_audit(connection, user["id"], "content_reviewed", f"{item['title']}: {decision}")
             connection.commit()
         self._json({"ok": True, "message": f"Content {decision}."})
+
+    def _create_backup(self, user: dict) -> None:
+        ref = secrets.token_hex(4)
+        try:
+            manifest = backups.create_backup(DB_PATH, f"{user['full_name']} (user {user['id']})")
+        except (OSError, sqlite3.Error, backups.BackupError) as exc:
+            with connect_db() as connection:
+                record_audit(connection, user["id"], "backup_failed", f"outcome=failure ref={ref} reason={exc}")
+                connection.commit()
+            self._error("The backup could not be created. Please try again.", HTTPStatus.INTERNAL_SERVER_ERROR)
+            return
+        with connect_db() as connection:
+            record_audit(connection, user["id"], "backup_created",
+                         f"outcome=success ref={ref} backup={manifest['file']} sha256={manifest['sha256'][:16]}")
+            connection.commit()
+        self._json({"ok": True, "message": "Backup created and verified.", "backup": manifest["file"]})
+
+    def _verify_backup(self, user: dict, name: str) -> None:
+        ref = secrets.token_hex(4)
+        if not backups.exists(DB_PATH, name):
+            self._error("Backup was not found.", HTTPStatus.NOT_FOUND)
+            return
+        result = backups.verify_backup(DB_PATH, name)
+        with connect_db() as connection:
+            if result["ok"]:
+                record_audit(connection, user["id"], "backup_verified", f"outcome=success ref={ref} backup={name}")
+            else:
+                record_audit(connection, user["id"], "backup_verify_failed",
+                             f"outcome=failure ref={ref} backup={name} checks={' | '.join(result['problems'])}")
+            connection.commit()
+        self._json({"ok": True, "name": name, "valid": result["ok"], "problems": result["problems"]})
+
+    def _restore_backup(self, user: dict, name: str, body: dict) -> None:
+        ref = secrets.token_hex(4)
+        if body.get("confirm") != name:
+            raise ValueError("Type the backup name to confirm the restore.")
+        if not backups.exists(DB_PATH, name):
+            self._error("Backup was not found.", HTTPStatus.NOT_FOUND)
+            return
+        try:
+            outcome = backups.restore_backup(DB_PATH, name, f"{user['full_name']} (user {user['id']})")
+        except backups.BackupError as exc:
+            with connect_db() as connection:
+                record_audit(connection, user["id"], "backup_restore_refused",
+                             f"outcome=refused ref={ref} backup={name} checks={' | '.join(exc.problems)}")
+                connection.commit()
+            self._json({"ok": False, "error": str(exc), "problems": exc.problems}, HTTPStatus.CONFLICT)
+            return
+        # Bring an older backup up to the current schema, then end every session:
+        # accounts and roles may differ in the restored data (C-T4-BR-09).
+        initialize_database()
+        sessions = globals().get("SESSIONS")
+        if isinstance(sessions, dict):
+            sessions.clear()
+        with connect_db() as connection:
+            if connection.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'sessions'").fetchone():
+                connection.execute("DELETE FROM sessions")
+            actor = user["id"] if connection.execute("SELECT 1 FROM users WHERE id = ?", (user["id"],)).fetchone() else None
+            record_audit(connection, actor, "backup_restored",
+                         f"outcome=success ref={ref} backup={name} by={user['email']} "
+                         f"safety_backup={outcome['safety_backup']['file']} carried_audit_events={outcome['carried_audit']}")
+            connection.commit()
+        self._json(
+            {"ok": True, "message": "Backup restored. Everyone, including you, must sign in again.",
+             "safety_backup": outcome["safety_backup"]["file"]},
+            cookies=[f"{SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0"],
+        )
 
 
 def main() -> None:
