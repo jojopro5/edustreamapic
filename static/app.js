@@ -80,6 +80,7 @@ const NAV = {
   admin: [["overview", "home", "Overview"], ["approvals", "shield", "Approval queue"], ["feedback", "users", "Learner feedback"], ["audit", "audit", "Audit reports"]]
 };
 NAV.admin.push(["backups", "layers", "Backup & recovery"]);
+for (const role of Object.keys(NAV)) NAV[role].push(["profile", "users", "My profile"]);
 function setupShell() {
   $("#login-screen").classList.add("hidden");
   $("#app-shell").classList.remove("hidden");
@@ -163,11 +164,13 @@ function render() {
     admin: { overview: adminOverview, approvals: adminApprovals, feedback: adminFeedback, audit: adminAuditSearch }
   };
   views.admin.backups = adminBackups;
+  for (const role of Object.keys(views)) views[role].profile = profileView;
   $("#app-content").innerHTML = (views[state.user.role][state.view] || views[state.user.role].overview)();
   if ($("#moderation-list")) renderModerationList($("#moderation-list"), state.dashboard.feedback || [], message => loadDashboard(message));
   bindViewEvents();
   if ($("#backup-list")) bindBackupView();
   if ($("#audit-filters")) bindAuditSearch();
+  if ($("#profile-form")) bindProfileView();
 }
 function learnerOverview() {
   setPage("Overview", "Learner workspace");

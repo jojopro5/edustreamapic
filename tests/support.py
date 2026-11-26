@@ -46,6 +46,8 @@ class LiveServerTestCase(unittest.TestCase):
             server.SESSIONS.clear()
         if hasattr(server, "LOGIN_THROTTLE"):
             server.LOGIN_THROTTLE.reset()
+        if hasattr(server, "REGISTRATION_THROTTLE"):
+            server.REGISTRATION_THROTTLE.reset()
 
     def setUp(self):
         self.reset_auth_state()

@@ -8,7 +8,9 @@ CREATE TABLE IF NOT EXISTS users (
     password_hash TEXT NOT NULL,
     role TEXT NOT NULL CHECK (role IN ('learner', 'educator', 'admin')),
     is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    -- Optional profile text, shown for educators. Added to older databases at startup.
+    bio TEXT
 );
 
 CREATE TABLE IF NOT EXISTS plans (

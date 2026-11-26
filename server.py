@@ -21,6 +21,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
+import accounts
 import uploads
 
 from quizzes import QUIZZES, public_quiz
@@ -51,6 +52,7 @@ LEARNER_COURSE_IDS = frozenset({1, 2, 3})
 CORRELATION_ID: contextvars.ContextVar[str | None] = contextvars.ContextVar("correlation_id", default=None)
 REQUEST_ID_PATTERN = re.compile(r"[A-Za-z0-9_-]{8,64}")
 AUDIT_OUTCOMES = ("success", "failure", "denied")
+REGISTRATION_THROTTLE = accounts.RegistrationThrottle()
 
 
 class ClosingConnection(sqlite3.Connection):
@@ -213,6 +215,9 @@ def initialize_database(reset: bool = False) -> None:
         DB_PATH.unlink()
     with connect_db() as connection:
         connection.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
+        user_columns = {row["name"] for row in connection.execute("PRAGMA table_info(users)")}
+        if "bio" not in user_columns:
+            connection.execute("ALTER TABLE users ADD COLUMN bio TEXT")
         audit_columns = {row["name"] for row in connection.execute("PRAGMA table_info(audit_events)")}
         if "outcome" not in audit_columns:
             connection.execute(
@@ -589,6 +594,14 @@ class EduStreamHandler(BaseHTTPRequestHandler):
                     self._error(str(exc), HTTPStatus.BAD_REQUEST)
             return
 
+        if path == "/api/profile":
+            user = self._require_user()
+            if user:
+                with connect_db() as connection:
+                    row = connection.execute("SELECT * FROM users WHERE id = ?", (user["id"],)).fetchone()
+                self._json({"ok": True, "profile": accounts.public_profile(row)})
+            return
+
         if path == "/api/session":
             user = self._current_user()
             with connect_db() as connection:
@@ -697,6 +710,19 @@ class EduStreamHandler(BaseHTTPRequestHandler):
         try:
             if path == "/api/login":
                 self._login(self._body())
+                return
+            if path == "/api/register":
+                self._register(self._body())
+                return
+            if path == "/api/profile":
+                user = self._require_user()
+                if user:
+                    self._update_profile(user, self._body())
+                return
+            if path == "/api/profile/password":
+                user = self._require_user()
+                if user:
+                    self._change_password(user, self._body())
                 return
             if path == "/api/logout":
                 user = self._current_user()
@@ -825,6 +851,87 @@ class EduStreamHandler(BaseHTTPRequestHandler):
             {"ok": True, "user": {"id": user["id"], "full_name": user["full_name"], "email": user["email"], "role": user["role"]}},
             cookies=[self._session_cookie(token, int(SESSION_TTL.total_seconds()))],
         )
+
+    def _register(self, body: dict) -> None:
+        """Create a learner account (never educator or admin) and sign it in."""
+        client = self.client_address[0]
+        try:
+            if not REGISTRATION_THROTTLE.allow(client):
+                with connect_db() as connection:
+                    record_audit(connection, None, "registration_throttled", "Too many new accounts from one client")
+                    connection.commit()
+                raise accounts.AccountError("Too many accounts were created from this device. Please try again later.", 429)
+            name = accounts.clean_name(body.get("full_name"))
+            email = accounts.clean_email(body.get("email"))
+            password = accounts.check_password(body.get("password"), email)
+        except accounts.AccountError as error:
+            self._error(str(error), error.status)
+            return
+        with connect_db() as connection:
+            if connection.execute("SELECT 1 FROM users WHERE email = ?", (email,)).fetchone():
+                record_audit(connection, None, "registration_rejected", f"Email already registered: {pseudonym(email)}")
+                connection.commit()
+                self._error("An account with this email already exists. Sign in instead.", HTTPStatus.CONFLICT)
+                return
+            salt, digest = make_password(password)
+            cursor = connection.execute(
+                "INSERT INTO users (full_name, email, password_salt, password_hash, role, created_at) VALUES (?, ?, ?, ?, 'learner', ?)",
+                (name, email, salt, digest, iso_now()),
+            )
+            user_id = cursor.lastrowid
+            REGISTRATION_THROTTLE.record(client)
+            token = create_session(connection, user_id)
+            record_audit(connection, user_id, "account_registered", f"New learner account {pseudonym(email)}")
+            connection.commit()
+        self._json(
+            {"ok": True, "message": "Your learner account is ready. Choose a plan to unlock courses.",
+             "user": {"id": user_id, "full_name": name, "email": email, "role": "learner"}},
+            HTTPStatus.CREATED,
+            cookies=[self._session_cookie(token, int(SESSION_TTL.total_seconds()))],
+        )
+
+    def _update_profile(self, user: dict, body: dict) -> None:
+        try:
+            name = accounts.clean_name(body.get("full_name"))
+            bio = accounts.clean_bio(body.get("bio")) if user["role"] == "educator" else ""
+            if user["role"] != "educator" and body.get("bio"):
+                raise accounts.AccountError("Only educator profiles have a bio.")
+        except accounts.AccountError as error:
+            self._error(str(error), error.status)
+            return
+        with connect_db() as connection:
+            connection.execute("UPDATE users SET full_name = ?, bio = ? WHERE id = ?", (name, bio or None, user["id"]))
+            record_audit(connection, user["id"], "profile_updated", "Name" + (" and bio" if user["role"] == "educator" else "") + " updated")
+            connection.commit()
+            row = connection.execute("SELECT * FROM users WHERE id = ?", (user["id"],)).fetchone()
+        self._json({"ok": True, "message": "Profile saved.", "profile": accounts.public_profile(row)})
+
+    def _change_password(self, user: dict, body: dict) -> None:
+        current = body.get("current_password")
+        with connect_db() as connection:
+            row = connection.execute("SELECT * FROM users WHERE id = ?", (user["id"],)).fetchone()
+            if not isinstance(current, str) or not verify_password(current, row["password_salt"], row["password_hash"]):
+                record_audit(connection, user["id"], "password_change_failed", "Current password did not match")
+                connection.commit()
+                self._error("Your current password is incorrect.", HTTPStatus.FORBIDDEN)
+                return
+            try:
+                new_password = accounts.check_password(body.get("new_password"), row["email"])
+                if new_password == current:
+                    raise accounts.AccountError("Choose a password you have not just used.")
+            except accounts.AccountError as error:
+                self._error(str(error), error.status)
+                return
+            salt, digest = make_password(new_password)
+            connection.execute("UPDATE users SET password_salt = ?, password_hash = ? WHERE id = ?", (salt, digest, user["id"]))
+            # End every other session for this account; keep the one making the change.
+            keep = hash_token(self._session_token() or "")
+            ended = connection.execute(
+                "DELETE FROM sessions WHERE user_id = ? AND token_hash != ?", (user["id"], keep)
+            ).rowcount
+            record_audit(connection, user["id"], "password_changed", f"Other sessions ended: {ended}")
+            connection.commit()
+        self._json({"ok": True, "message": "Password changed. You have been signed out everywhere else."})
 
     def _dashboard(self, user: dict) -> dict:
         with connect_db() as connection:

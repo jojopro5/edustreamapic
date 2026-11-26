@@ -13,6 +13,7 @@
   <link rel="stylesheet" href="/quiz.css">
   <link rel="stylesheet" href="/feedback.css">
   <link rel="stylesheet" href="/operations.css">
+  <link rel="stylesheet" href="/profile.css">
 </head>
 <body>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
@@ -61,6 +62,20 @@
             <button id="toggle-password" type="button" class="text-button" aria-label="Show password">Show</button>
           </div>
           <button class="button primary full" type="submit"><span>Sign in to your workspace</span></button>
+        </form>
+        <p class="register-toggle">New to EduStream? <button id="show-register" type="button" class="link-button" aria-expanded="false" aria-controls="register-form">Create a learner account</button></p>
+        <form id="register-form" class="register-form hidden" novalidate>
+          <h3>Create a learner account</h3>
+          <p class="muted">Educator and administrator accounts are set up by an administrator.</p>
+          <label for="register-name">Full name</label>
+          <input id="register-name" name="full_name" autocomplete="name" minlength="2" maxlength="80" required>
+          <label for="register-email">Email address</label>
+          <input id="register-email" name="email" type="email" autocomplete="email" maxlength="254" required>
+          <label for="register-password">Password</label>
+          <input id="register-password" name="password" type="password" autocomplete="new-password" minlength="10" maxlength="128" required aria-describedby="register-password-help">
+          <p id="register-password-help" class="helper">At least 10 characters. A short phrase is easy to remember. Use a made-up password for this prototype.</p>
+          <p id="register-error" class="inline-error" role="alert"></p>
+          <button class="button secondary full" type="submit">Create account</button>
         </form>
         <div class="divider"><span>Explore the prototype</span></div>
         <p class="role-help">Choose a role to try its workspace.</p>
@@ -179,6 +194,7 @@
   <script src="/quiz.js" defer></script>
   <script src="/feedback.js" defer></script>
   <script src="/operations.js" defer></script>
+  <script src="/profile.js" defer></script>
   <script src="/app.js" defer></script>
 </body>
 </html>

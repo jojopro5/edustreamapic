@@ -1,0 +1,10 @@
+.register-toggle { margin: 16px 0 0; color: #5b708b; font-size: 13px; text-align: center; }
+.link-button { padding: 0; border: 0; background: none; color: #2374ed; font-weight: 700; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+.register-form { margin-top: 18px; padding-top: 18px; border-top: 1px solid #e7edf4; }
+.register-form h3 { margin: 0 0 4px; color: #172e4b; font-size: 18px; }
+.register-form .muted { margin: 0 0 12px; font-size: 13px; }
+.register-form label { display: block; margin-top: 12px; }
+.register-form .helper { margin-top: 6px; }
+.register-form .button { margin-top: 14px; }
+.profile-grid { align-items: start; }
+input:disabled { background: #f4f6fa; color: #65758b; }
