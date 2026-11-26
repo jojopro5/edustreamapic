@@ -131,6 +131,25 @@
     <button id="dialog-start-quiz" class="button secondary full hidden" type="button">View assessments</button>
     <p id="dialog-error" class="inline-error" role="alert"></p>
   </dialog>
+  <dialog id="plan-dialog" class="lesson-dialog plan-dialog" aria-labelledby="plan-dialog-title" aria-describedby="plan-dialog-summary">
+    <div class="dialog-top">
+      <span class="eyebrow">CONFIRM SUBSCRIPTION</span>
+      <button id="plan-dialog-close" type="button" class="icon-button" aria-label="Close without changing plan">×</button>
+    </div>
+    <h2 id="plan-dialog-title">Confirm plan</h2>
+    <p id="plan-dialog-summary"></p>
+    <dl class="plan-quote">
+      <div><dt>Simulated charge today</dt><dd id="plan-dialog-amount"></dd></div>
+      <div><dt>Access currently ends</dt><dd id="plan-dialog-current-end"></dd></div>
+      <div><dt>Access will end</dt><dd id="plan-dialog-new-end"></dd></div>
+    </dl>
+    <p id="plan-dialog-note" class="muted"></p>
+    <div class="plan-dialog-actions">
+      <button id="plan-dialog-cancel" class="button ghost" type="button">Cancel</button>
+      <button id="plan-dialog-confirm" class="button primary" type="button">Confirm and pay</button>
+    </div>
+    <p id="plan-dialog-error" class="inline-error" role="alert"></p>
+  </dialog>
   <dialog id="quiz-dialog" class="quiz-dialog" aria-labelledby="quiz-title" aria-describedby="quiz-description">
     <header class="quiz-header">
       <div><span class="quiz-eyebrow">COURSE ASSESSMENTS</span><h2 id="quiz-title">Course assessments</h2><p id="quiz-description">Pass the module quizzes, unlock your final assessment, and track your best results.</p></div>
