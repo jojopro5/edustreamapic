@@ -117,6 +117,15 @@ def public_attempt(connection, row) -> dict:
     result = json.loads(row["result_json"]) if row["status"] == "submitted" else None
     if result:
         result["best_score"] = best_scores(connection, row["user_id"], row["learning_item_id"])[row["assessment_id"]]
+        # Reveal the answer key only after this assessment has been passed. Otherwise a
+        # learner could copy the shown answers into a retake instead of studying.
+        result["answers_revealed"] = result["best_score"] >= PASS_PERCENT
+        if not result["answers_revealed"]:
+            result["feedback"] = [
+                entry if entry["correct"] else
+                {"question_id": entry["question_id"], "correct": False, "selected_option_id": entry["selected_option_id"]}
+                for entry in result["feedback"]
+            ]
         result["course_completed"] = completion(connection, row["user_id"], row["learning_item_id"])["completed"]
     return {
         "id": row["id"], "item_id": row["learning_item_id"], "assessment_id": row["assessment_id"],

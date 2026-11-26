@@ -37,6 +37,7 @@ These credentials are for a local prototype only.
 - Learner progress tracking
 - Three module quizzes and a final assessment per course, with server-saved drafts, best grades, attempt history, feedback, and different question sets on retakes
 - A curated learner catalogue limited to these three English courses; other resources stay hidden from students
+- Learner feedback on each course, with administrator moderation
 - Educator content submission workflow
 - Administrator content approval and rejection
 - Validated educator course file attachments (PDF, PNG or text), frozen once reviewed
@@ -69,6 +70,18 @@ EduStream/
 ```
 
 The SQLite schema is intentionally separated from the application so the database can later be reviewed or migrated to MySQL without redesigning the website interface.
+
+## Learner feedback
+
+Learners can leave feedback in the lesson window of any course their plan includes. Other learners see the comment with the author's first name and initial only.
+
+- Comments are stored as plain text and always displayed as text, so typed markup such as `<script>` shows literally and never runs. Text is kept rather than stripped because the Secure Web course invites learners to discuss code.
+- Comments must be 2 to 500 characters. Control and invisible formatting characters are removed. Each learner can post up to 5 comments every 10 minutes.
+- A learner can edit or delete only their own comments. Requests for another learner's comment return 404.
+- Administrators can hide or restore any comment under **Learner feedback**. Hidden comments disappear for learners, stay in the moderation list with who hid them and when, and can no longer be edited or deleted by their author.
+- Posting, editing, deleting, moderation, denied access and rate limiting are audit events. Events record ids only, never the comment text.
+
+Tests are in `tests/test_feedback.py`, named `T3_FB_01` to `T3_FB_09` for the test register.
 
 ## Course guides and external resources
 
@@ -103,7 +116,7 @@ Only the authenticated learner can read, save, or submit their attempts. Role, s
 
 The module-and-assessment flow is inspired by [Coursera's assignment guidance](https://www.coursera.support/s/article/learner-000001563?language=en_US); EduStream's question content and assessment rules are its own. It is not a Coursera integration.
 
-Each quiz requires an active subscription that includes its course. Starter includes Digital Safety and SQL Essentials; Secure Web requires Plus or Team.
+Each quiz requires an active subscription that includes its course. Starter includes Digital Safety and SQL Essentials; Secure Web requires Plus. The Team plan is hidden: it is not listed or sold, but existing Team records and their course access are kept.
 
 The learner catalogue is not a fixed list of IDs. A learning item is shown to learners when it is approved, is not marked Indonesian (`id`), and has both a nonempty practice quiz in `quizzes.py` and module banks in `assessment_content.py`. Pending, rejected, Indonesian and quiz-less items stay hidden, even after approval. Listing an item does not grant access: opening it, updating progress and taking its quizzes all still require an active subscription whose plan has a `plan_entitlements` row for that item. When an admin approves an item it is added to the Plus and Team plans. Existing records and educator/admin review access are preserved. Learner statistics count only visible courses.
 
