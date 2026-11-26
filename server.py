@@ -45,6 +45,23 @@ LOGIN_MAX_FAILURES_PER_CLIENT = 20
 LEARNER_COURSE_IDS = frozenset({1, 2, 3})
 
 
+class _DiscardBody:
+    """Stands in for wfile after the headers of a HEAD response."""
+
+    def __init__(self, wfile):
+        self._wfile = wfile
+
+    def write(self, data) -> int:
+        return len(data)
+
+    def flush(self) -> None:
+        self._wfile.flush()
+
+    def __getattr__(self, name):
+        # closed, close() and the rest still reach the real socket file.
+        return getattr(self._wfile, name)
+
+
 class ClosingConnection(sqlite3.Connection):
     """Commit or roll back a context block, then release the database file."""
 
@@ -211,6 +228,10 @@ def initialize_database(reset: bool = False) -> None:
             connection.execute(
                 "ALTER TABLE learning_items ADD COLUMN language TEXT NOT NULL DEFAULT 'en' CHECK (language IN ('en', 'id'))"
             )
+        # Review feedback for educators; older databases gain the columns in place.
+        for column in ("review_note", "reviewed_at"):
+            if column not in columns:
+                connection.execute(f"ALTER TABLE learning_items ADD COLUMN {column} TEXT")
         seed_database(connection)
 
 
@@ -219,6 +240,41 @@ def record_audit(connection: sqlite3.Connection, user_id: int | None, event_type
         "INSERT INTO audit_events (user_id, event_type, details, created_at) VALUES (?, ?, ?, ?)",
         (user_id, event_type, details[:500], iso_now()),
     )
+
+
+DEMO_ACCOUNTS = [
+    {"role": "learner", "email": "learner@edustream.local", "password": "Learn123!"},
+    {"role": "educator", "email": "educator@edustream.local", "password": "Teach123!"},
+    {"role": "admin", "email": "admin@edustream.local", "password": "Admin123!"},
+]
+CONTENT_TYPES = frozenset({"course", "video", "article", "quiz", "workshop"})
+
+
+def validated_content(body: dict) -> dict:
+    """Check the educator-editable fields of a learning item and return them cleaned."""
+    title = str(body.get("title", "")).strip()
+    category = str(body.get("category", "")).strip()
+    description = str(body.get("description", "")).strip()
+    content_type = str(body.get("content_type", "course")).strip().lower()
+    language = str(body.get("language", "en")).strip().lower()
+    try:
+        duration = int(body.get("duration_minutes", 0))
+    except (TypeError, ValueError):
+        duration = 0
+    if not 4 <= len(title) <= 100:
+        raise ValueError("Title must contain between 4 and 100 characters.")
+    if not 3 <= len(category) <= 40:
+        raise ValueError("Category must contain between 3 and 40 characters.")
+    if not 20 <= len(description) <= 500:
+        raise ValueError("Description must contain between 20 and 500 characters.")
+    if content_type not in CONTENT_TYPES:
+        raise ValueError("Select a supported content type.")
+    if language not in {"en", "id"}:
+        raise ValueError("Select English or Bahasa Indonesia as the content language.")
+    if not 5 <= duration <= 600:
+        raise ValueError("Duration must be between 5 and 600 minutes.")
+    return {"title": title, "category": category, "description": description,
+            "content_type": content_type, "language": language, "duration_minutes": duration}
 
 
 SUBSCRIPTION_PERIOD_DAYS = 30
@@ -490,6 +546,10 @@ class EduStreamHandler(BaseHTTPRequestHandler):
             self.send_error(HTTPStatus.NOT_FOUND)
             return
         if not target.is_file():
+            if Path(relative).suffix:
+                # A missing asset is a real 404; only extensionless paths fall back to the app.
+                self._error("File not found.", HTTPStatus.NOT_FOUND)
+                return
             target = STATIC_ROOT / "index.html"
         data = target.read_bytes()
         content_type = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
@@ -500,6 +560,37 @@ class EduStreamHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-cache")
         self.end_headers()
         self.wfile.write(data)
+
+    def end_headers(self) -> None:
+        super().end_headers()
+        if self.command == "HEAD":
+            # A HEAD response carries the GET headers but never a body.
+            self.wfile = _DiscardBody(self.wfile)
+
+    def do_HEAD(self) -> None:
+        self._run_safely(self._handle_get)
+
+    def _cross_site_error(self, path: str) -> str | None:
+        """Reject state-changing requests that a browser sent from another site.
+
+        SameSite=Lax already keeps the session cookie off most cross-site POSTs; this is a
+        second layer for older browsers and sibling subdomains.
+        """
+        fetch_site = self.headers.get("Sec-Fetch-Site")
+        if fetch_site and fetch_site not in {"same-origin", "none"}:
+            return "Cross-site requests are not allowed."
+        origin = self.headers.get("Origin")
+        if origin is not None and (origin == "null" or urlparse(origin).netloc != self.headers.get("Host", "")):
+            return "Cross-site requests are not allowed."
+        if re.fullmatch(r"/api/content/\d+/attachment", path):
+            # File uploads are raw bytes; the custom header forces a CORS preflight.
+            if not self.headers.get("X-File-Name"):
+                return "File uploads must include the X-File-Name header."
+            return None
+        content_type = self.headers.get("Content-Type", "").split(";")[0].strip().lower()
+        if content_type != "application/json":
+            return "Requests must be sent as application/json."
+        return None
 
     def _run_safely(self, handler) -> None:
         """Answer with a JSON 500 instead of dropping the connection on an unexpected error."""
@@ -535,7 +626,8 @@ class EduStreamHandler(BaseHTTPRequestHandler):
             user = self._current_user()
             with connect_db() as connection:
                 plans = offered_plans(connection)
-            self._json({"ok": True, "authenticated": bool(user), "user": user, "plans": plans})
+            demo = DEMO_ACCOUNTS if getattr(self.server, "demo_logins", True) else []
+            self._json({"ok": True, "authenticated": bool(user), "user": user, "plans": plans, "demo_accounts": demo})
             return
 
         if path == "/api/dashboard":
@@ -592,8 +684,10 @@ class EduStreamHandler(BaseHTTPRequestHandler):
                     (item_id,),
                 ).fetchone()
                 if not item or not has_entitlement(connection, user["id"], item_id):
-                    record_audit(connection, user["id"], "access_denied", f"Learning item {item_id}")
-                    connection.commit()
+                    if item:
+                        # Unknown ids are not logged, so probing ids cannot flood the audit log.
+                        record_audit(connection, user["id"], "access_denied", f"Learning item {item_id}")
+                        connection.commit()
                     self._error("This learning item is unavailable or not included in your active subscription.", HTTPStatus.FORBIDDEN)
                     return
                 record_audit(connection, user["id"], "content_accessed", f"Learning item {item_id}")
@@ -605,7 +699,7 @@ class EduStreamHandler(BaseHTTPRequestHandler):
                     "item": {**dict(item), "attachment": attachment},
                     "lesson": {
                         "heading": "Lesson available",
-                        "body": "Your entitlement was verified successfully. This prototype can now deliver the protected learning material.",
+                        "body": "Your plan includes this course. Work through the materials below, then record your study progress.",
                     },
                 }
             )
@@ -616,6 +710,10 @@ class EduStreamHandler(BaseHTTPRequestHandler):
     def _handle_post(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/") or "/"
+        cross_site = self._cross_site_error(path)
+        if cross_site:
+            self._error(cross_site, HTTPStatus.FORBIDDEN)
+            return
         try:
             if path == "/api/login":
                 self._login(self._body())
@@ -680,6 +778,12 @@ class EduStreamHandler(BaseHTTPRequestHandler):
                 user = self._require_user({"learner"})
                 if user:
                     self._submit_quiz(user, int(match.group(1)), self._body())
+                return
+            match = re.fullmatch(r"/api/content/(\d+)/resubmit", path)
+            if match:
+                user = self._require_user({"educator"})
+                if user:
+                    self._resubmit_content(user, int(match.group(1)), self._body())
                 return
             match = re.fullmatch(r"/api/admin/content/(\d+)/review", path)
             if match:
@@ -800,7 +904,7 @@ class EduStreamHandler(BaseHTTPRequestHandler):
                     dict(row)
                     for row in connection.execute(
                         """
-                        SELECT id, title, category, description, content_type, language, duration_minutes, status, created_at
+                        SELECT id, title, category, description, content_type, language, duration_minutes, status, created_at, review_note
                         FROM learning_items WHERE created_by = ? ORDER BY id DESC
                         """,
                         (user["id"],),
@@ -1214,27 +1318,7 @@ class EduStreamHandler(BaseHTTPRequestHandler):
         self._json({"ok": True, "message": message, "quote": quote})
 
     def _create_content(self, user: dict, body: dict) -> None:
-        title = str(body.get("title", "")).strip()
-        category = str(body.get("category", "")).strip()
-        description = str(body.get("description", "")).strip()
-        content_type = str(body.get("content_type", "course")).strip().lower()
-        language = str(body.get("language", "en")).strip().lower()
-        try:
-            duration = int(body.get("duration_minutes", 0))
-        except (TypeError, ValueError):
-            duration = 0
-        if not 4 <= len(title) <= 100:
-            raise ValueError("Title must contain between 4 and 100 characters.")
-        if not 3 <= len(category) <= 40:
-            raise ValueError("Category must contain between 3 and 40 characters.")
-        if not 20 <= len(description) <= 500:
-            raise ValueError("Description must contain between 20 and 500 characters.")
-        if content_type not in {"course", "video", "article", "quiz", "workshop"}:
-            raise ValueError("Select a supported content type.")
-        if language not in {"en", "id"}:
-            raise ValueError("Select English or Bahasa Indonesia as the content language.")
-        if not 5 <= duration <= 600:
-            raise ValueError("Duration must be between 5 and 600 minutes.")
+        fields = validated_content(body)
         status = "approved" if user["role"] == "admin" else "pending"
         with connect_db() as connection:
             cursor = connection.execute(
@@ -1243,28 +1327,68 @@ class EduStreamHandler(BaseHTTPRequestHandler):
                     (title, category, description, content_type, language, duration_minutes, created_by, status, created_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (title, category, description, content_type, language, duration, user["id"], status, iso_now()),
+                (fields["title"], fields["category"], fields["description"], fields["content_type"],
+                 fields["language"], fields["duration_minutes"], user["id"], status, iso_now()),
             )
             if status == "approved":
                 # Admin-published items skip review, so grant plan access here too.
                 grant_default_entitlements(connection, cursor.lastrowid)
-            record_audit(connection, user["id"], "content_created", f"Learning item {cursor.lastrowid}: {title} ({status})")
+            record_audit(connection, user["id"], "content_created", f"Learning item {cursor.lastrowid}: {fields['title']} ({status})")
             connection.commit()
         self._json({"ok": True, "message": "Content submitted for approval." if status == "pending" else "Content published.", "item_id": cursor.lastrowid})
+
+    def _resubmit_content(self, user: dict, item_id: int, body: dict) -> None:
+        """Let an educator edit a rejected item and send it back for review."""
+        fields = validated_content(body)
+        with connect_db() as connection:
+            item = connection.execute(
+                "SELECT id, status, created_by FROM learning_items WHERE id = ?", (item_id,)
+            ).fetchone()
+            if not item or item["created_by"] != user["id"]:
+                self._error("Learning item was not found.", HTTPStatus.NOT_FOUND)
+                return
+            if item["status"] != "rejected":
+                self._error("Only rejected items can be edited and resubmitted.", HTTPStatus.CONFLICT)
+                return
+            connection.execute(
+                """
+                UPDATE learning_items
+                SET title = ?, category = ?, description = ?, content_type = ?, language = ?,
+                    duration_minutes = ?, status = 'pending'
+                WHERE id = ?
+                """,
+                (fields["title"], fields["category"], fields["description"], fields["content_type"],
+                 fields["language"], fields["duration_minutes"], item_id),
+            )
+            record_audit(connection, user["id"], "content_resubmitted", f"Learning item {item_id}: {fields['title']}")
+            connection.commit()
+        self._json({"ok": True, "message": "Changes sent for review.", "item_id": item_id})
 
     def _review_content(self, user: dict, item_id: int, body: dict) -> None:
         decision = str(body.get("decision", "")).lower()
         if decision not in {"approved", "rejected"}:
             raise ValueError("Decision must be approved or rejected.")
+        reason = str(body.get("reason", "")).strip()
+        if decision == "rejected" and not 10 <= len(reason) <= 500:
+            raise ValueError("Give the educator a reason for the rejection (10 to 500 characters).")
         with connect_db() as connection:
-            item = connection.execute("SELECT id, title FROM learning_items WHERE id = ?", (item_id,)).fetchone()
+            item = connection.execute("SELECT id, title, status FROM learning_items WHERE id = ?", (item_id,)).fetchone()
             if not item:
                 self._error("Learning item was not found.", HTTPStatus.NOT_FOUND)
                 return
-            connection.execute("UPDATE learning_items SET status = ? WHERE id = ?", (decision, item_id))
+            if item["status"] != "pending":
+                # Published or already rejected items are not re-reviewed from here, so a
+                # stale or scripted request cannot pull a live course away from learners.
+                self._error(f"This item was already {item['status']}. Only pending items can be reviewed.", HTTPStatus.CONFLICT)
+                return
+            connection.execute(
+                "UPDATE learning_items SET status = ?, review_note = ?, reviewed_at = ? WHERE id = ?",
+                (decision, reason if decision == "rejected" else None, iso_now(), item_id),
+            )
             if decision == "approved":
                 grant_default_entitlements(connection, item_id)
-            record_audit(connection, user["id"], "content_reviewed", f"{item['title']}: {decision}")
+            details = f"{item['title']}: {decision}" + (f" ({reason})" if decision == "rejected" else "")
+            record_audit(connection, user["id"], "content_reviewed", details)
             connection.commit()
         self._json({"ok": True, "message": f"Content {decision}."})
 
@@ -1347,6 +1471,12 @@ def main() -> None:
         default=os.environ.get("EDUSTREAM_SECURE_COOKIES", "auto"),
         help="Mark the session cookie Secure (HTTPS only). 'auto' turns it on unless --host is a loopback address.",
     )
+    parser.add_argument(
+        "--demo-logins",
+        choices=("on", "off"),
+        default=os.environ.get("EDUSTREAM_DEMO_LOGINS", "on"),
+        help="Show the one-click demo account buttons on the sign-in page. Turn off for any public deployment.",
+    )
     args = parser.parse_args()
 
     initialize_database(reset=args.reset)
@@ -1355,6 +1485,7 @@ def main() -> None:
         server.secure_cookies = not is_loopback_host(args.host)
     else:
         server.secure_cookies = args.secure_cookies == "on"
+    server.demo_logins = args.demo_logins == "on"
     if server.secure_cookies:
         print("Session cookies are marked Secure: serve the site over HTTPS (for example behind a TLS proxy).")
     print(f"EduStream is running at http://{args.host}:{args.port}")
