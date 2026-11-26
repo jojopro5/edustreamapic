@@ -79,6 +79,7 @@ const NAV = {
   educator: [["overview", "home", "Overview"], ["studio", "plus", "Content studio"], ["content", "layers", "My content"]],
   admin: [["overview", "home", "Overview"], ["approvals", "shield", "Approval queue"], ["audit", "audit", "Audit reports"]]
 };
+NAV.admin.push(["backups", "layers", "Backup & recovery"]);
 function setupShell() {
   $("#login-screen").classList.add("hidden");
   $("#app-shell").classList.remove("hidden");
@@ -143,8 +144,10 @@ function render() {
     educator: { overview: educatorOverview, studio: educatorStudio, content: educatorContent },
     admin: { overview: adminOverview, approvals: adminApprovals, audit: adminAudit }
   };
+  views.admin.backups = adminBackups;
   $("#app-content").innerHTML = (views[state.user.role][state.view] || views[state.user.role].overview)();
   bindViewEvents();
+  if ($("#backup-list")) bindBackupView();
 }
 function learnerOverview() {
   setPage("Overview", "Learner workspace");
@@ -311,6 +314,15 @@ function adminAudit() {
   setPage("Audit reports", "Administrator workspace");
   return hero("PLATFORM ACTIVITY", "A clear record of what happened.", "Follow account access, subscription changes, learning progress, and publication decisions.") + '<section class="panel"><div class="panel-header"><div><h2>Event log</h2><p>The 30 most recent recorded events</p></div><span class="badge neutral">' + state.dashboard.audit.length + ' events</span></div><div class="audit-list">' +
     (state.dashboard.audit.map(event => '<div class="audit-row"><span class="activity-icon ' + (event.event_type.includes("denied") ? 'theme-red' : '') + '">' + icon(event.event_type.includes("denied") ? "lock" : "audit") + '</span><div><strong>' + escapeHtml(titleCase(event.event_type)) + '</strong><p>' + escapeHtml(event.details) + '</p></div><span class="audit-user">' + escapeHtml(event.user_name) + '</span><time>' + formatDate(event.created_at) + '<small>' + formatTime(event.created_at) + '</small></time></div>').join("") || emptyState("No events recorded", "New activity will be shown here.", "audit")) + '</div></section>';
+}
+function adminBackups() {
+  setPage("Backup & recovery", "Administrator workspace");
+  return hero("RECOVERY", "Keep a verified copy of the platform.", "Each backup is signed and checked before it can be restored. A restore takes a safety copy first and signs everyone out.", '<button class="button primary" id="create-backup">' + icon("plus") + 'Create backup</button>') + '<section class="panel"><div class="panel-header"><div><h2>Stored backups</h2><p>The 20 most recent copies. Each one is checked for a valid signature, matching SHA-256 digest and a healthy SQLite file.</p></div></div><div id="backup-list" class="backup-list"></div></section>';
+}
+function bindBackupView() {
+  const onRestored = async message => { await logout(); toast(message); };
+  loadBackups($("#backup-list"), onRestored);
+  $("#create-backup").addEventListener("click", event => createBackup(event.currentTarget, $("#backup-list"), onRestored));
 }
 function emptyState(title, body, glyph = "book") {
   return '<div class="empty-state"><span>' + icon(glyph) + '</span><h3>' + escapeHtml(title) + '</h3><p>' + escapeHtml(body) + '</p></div>';

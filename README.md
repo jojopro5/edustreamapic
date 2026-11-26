@@ -40,6 +40,7 @@ These credentials are for a local prototype only.
 - Educator content submission workflow
 - Administrator content approval and rejection
 - Payment records and audit events
+- Administrator backup and restore with signed, integrity-checked backups and a seeded tampered-backup scenario
 - Responsive desktop and mobile interface
 - Accessible mobile navigation, focus handling, and progress controls
 - Password hashing and parameterised SQL queries
@@ -51,6 +52,8 @@ EduStream/
   database/schema.sql     SQLite schema for Nimarta's database work
   assessment_content.py  Original module question banks (16 questions per module)
   assessments.py         Attempt lifecycle, question selection, gates and grading
+  backups.py             Signed SQLite backups, integrity checks, restore and the seeded fault (T4)
+  docs/                  Evidence traces (requirement, threat, control, test, result)
   quizzes.py              Legacy practice questions, retained for existing records
   static/                 Website interface and brand assets
   tests/                  End-to-end API and assessment workflow tests
@@ -91,3 +94,9 @@ Previous five-question practice results remain in `quiz_attempts` and their lega
 After pulling a code update, restart the server so new API routes and database tables are loaded. Existing data is preserved because schema additions run automatically at startup; do not use `--reset` for a normal update.
 
 Question references: [CISA password guidance](https://www.cisa.gov/sites/default/files/2024-09/Secure-Our-World-Passwords-Tip-Sheet.pdf), [NIST phishing guidance](https://www.nist.gov/itl/smallbusinesscyber/guidance-topic/phishing), and [Login.gov account authentication](https://www.login.gov/help/manage-your-account/add-or-change-your-authentication-method/). Privacy and role-access examples follow this project's acceptance checks.
+
+## Backup and recovery (T4)
+
+Administrators open **Backup & recovery** to create a backup, verify it, or restore it. Each backup is a consistent SQLite copy in `data/backups/` with a manifest signed by HMAC-SHA256 (key in `data/backup.key`). Before a restore the server checks the signature, the SHA-256 digest and size, SQLite's integrity check, the required tables and that an active administrator exists. If any check fails the restore is refused and audited. A good restore first takes a safety backup, keeps audit events recorded after the backup, and signs everyone out.
+
+Seeded problem for the demo: `python backups.py seed-fault --kind tamper` creates a backup in which the synthetic learner has been promoted to admin and the checksum recomputed. The signature check catches it. Other commands: `python backups.py create`, `list`, `verify <name>`. The evidence trace is in `docs/T4_backup_restore.md`.
