@@ -77,8 +77,9 @@ function setLoading(button, loading, label = "Please wait…") {
 const NAV = {
   learner: [["overview", "home", "Overview"], ["learning", "book", "My learning"], ["library", "library", "Explore courses"], ["subscription", "card", "Subscription & billing"]],
   educator: [["overview", "home", "Overview"], ["studio", "plus", "Content studio"], ["content", "layers", "My content"]],
-  admin: [["overview", "home", "Overview"], ["approvals", "shield", "Approval queue"], ["audit", "audit", "Audit reports"], ["backups", "layers", "Backup & recovery"]]
+  admin: [["overview", "home", "Overview"], ["approvals", "shield", "Approval queue"], ["audit", "audit", "Audit reports"]]
 };
+NAV.admin.push(["backups", "layers", "Backup & recovery"]);
 function setupShell() {
   $("#login-screen").classList.add("hidden");
   $("#app-shell").classList.remove("hidden");
@@ -141,11 +142,12 @@ function render() {
   const views = {
     learner: { overview: learnerOverview, learning: learnerLearning, library: learnerLibrary, subject: learnerSubject, subscription: learnerSubscription },
     educator: { overview: educatorOverview, studio: educatorStudio, content: educatorContent },
-    admin: { overview: adminOverview, approvals: adminApprovals, audit: adminAudit, backups: adminBackups }
+    admin: { overview: adminOverview, approvals: adminApprovals, audit: adminAudit }
   };
+  views.admin.backups = adminBackups;
   $("#app-content").innerHTML = (views[state.user.role][state.view] || views[state.user.role].overview)();
-  if ($("#backup-list")) bindBackupView();
   bindViewEvents();
+  if ($("#backup-list")) bindBackupView();
 }
 function learnerOverview() {
   setPage("Overview", "Learner workspace");

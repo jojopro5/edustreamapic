@@ -17,8 +17,8 @@ from pathlib import Path
 from urllib.parse import unquote, urlparse
 
 from quizzes import QUIZZES, public_quiz
-import assessments
 import backups
+import assessments
 
 
 ROOT = Path(__file__).resolve().parent
@@ -373,6 +373,12 @@ class EduStreamHandler(BaseHTTPRequestHandler):
             self._serve_static(parsed.path)
             return
 
+        if path == "/api/admin/backups":
+            user = self._require_user({"admin"})
+            if user:
+                self._json({"ok": True, "backups": backups.list_backups(DB_PATH)})
+            return
+
         if path == "/api/session":
             user = self._current_user()
             with connect_db() as connection:
@@ -385,12 +391,6 @@ class EduStreamHandler(BaseHTTPRequestHandler):
             if not user:
                 return
             self._json({"ok": True, **self._dashboard(user)})
-            return
-
-        if path == "/api/admin/backups":
-            user = self._require_user({"admin"})
-            if user:
-                self._json({"ok": True, "backups": backups.list_backups(DB_PATH)})
             return
 
         match = re.fullmatch(r"/api/assessments/(\d+)", path)
