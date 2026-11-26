@@ -103,7 +103,7 @@ Only the authenticated learner can read, save, or submit their attempts. Role, s
 
 The module-and-assessment flow is inspired by [Coursera's assignment guidance](https://www.coursera.support/s/article/learner-000001563?language=en_US); EduStream's question content and assessment rules are its own. It is not a Coursera integration.
 
-Each quiz requires an active subscription that includes its course. Starter includes Digital Safety and SQL Essentials; Secure Web requires Plus or Team.
+Each quiz requires an active subscription that includes its course. Starter includes Digital Safety and SQL Essentials; Secure Web requires Plus. (The Team plan is hidden: it is no longer offered, but a learner already on Team keeps it and can renew.)
 
 Only these three selected courses (IDs 1–3) are eligible for the learner catalogue. They must be approved, have a nonempty quiz, and be marked English. All other resources, including Indonesian content, stay hidden from learners even after approval. The same restriction applies to direct content access, progress updates, and quiz requests. Existing records and educator/admin review access are preserved. Learner statistics count only visible courses.
 

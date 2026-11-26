@@ -221,6 +221,19 @@ def record_audit(connection: sqlite3.Connection, user_id: int | None, event_type
 
 SUBSCRIPTION_PERIOD_DAYS = 30
 
+# Plans kept in the database (so existing subscriptions, payments and backups stay valid)
+# but no longer offered. Team was identical to Plus, so it is hidden until it is distinct.
+HIDDEN_PLAN_CODES = frozenset({"team"})
+
+
+def offered_plans(connection: sqlite3.Connection, current_plan_id: int | None = None) -> list[dict]:
+    """Plans a user may pick. A hidden plan is listed only for a learner already on it."""
+    return [
+        dict(row)
+        for row in connection.execute("SELECT * FROM plans ORDER BY price_monthly")
+        if row["code"] not in HIDDEN_PLAN_CODES or row["id"] == current_plan_id
+    ]
+
 
 def active_subscription(connection: sqlite3.Connection, user_id: int) -> sqlite3.Row | None:
     return connection.execute(
@@ -493,7 +506,8 @@ class EduStreamHandler(BaseHTTPRequestHandler):
         if path == "/api/session":
             user = self._current_user()
             with connect_db() as connection:
-                plans = [dict(row) for row in connection.execute("SELECT * FROM plans ORDER BY price_monthly")]
+                current = active_subscription(connection, user["id"]) if user else None
+                plans = offered_plans(connection, current["plan_id"] if current else None)
             self._json({"ok": True, "authenticated": bool(user), "user": user, "plans": plans})
             return
 
@@ -673,9 +687,10 @@ class EduStreamHandler(BaseHTTPRequestHandler):
 
     def _dashboard(self, user: dict) -> dict:
         with connect_db() as connection:
-            plans = [dict(row) for row in connection.execute("SELECT * FROM plans ORDER BY price_monthly")]
+            plans = offered_plans(connection)
             if user["role"] == "learner":
                 subscription = active_subscription(connection, user["id"])
+                plans = offered_plans(connection, subscription["plan_id"] if subscription else None)
                 plan_id = subscription["plan_id"] if subscription else -1
                 items = [
                     dict(row)
@@ -1056,6 +1071,8 @@ class EduStreamHandler(BaseHTTPRequestHandler):
             if not plan:
                 raise ValueError("The selected subscription plan does not exist.")
             current = active_subscription(connection, user["id"])
+            if plan["code"] in HIDDEN_PLAN_CODES and not (current and current["plan_id"] == plan_id):
+                raise ValueError("The selected subscription plan is no longer offered.")
             today = utc_now().date()
             current_end = datetime.fromisoformat(current["end_date"]).date() if current else None
             period_start = max(today, current_end) if current_end else today

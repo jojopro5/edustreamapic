@@ -2,6 +2,7 @@
 
 Test IDs:
   T1_SUB_01-05  plan change and renewal need confirmation and keep paid days
+  T1_SUB_06-07  the hidden Team plan is not offered, but existing Team learners keep it
   T3_CMP_01-03  the progress message and the Completed counter use one rule
   GEN_SYN_01-02 course guide thumbnails are synthetic files served locally
 """
@@ -194,6 +195,38 @@ class BillingAndCompletionTests(unittest.TestCase):
             )]
         self.assertEqual(len(details), 2)
         self.assertTrue(all("access ends" in detail for detail in details))
+
+    def team_plan_id(self):
+        with server.connect_db() as connection:
+            return connection.execute("SELECT id FROM plans WHERE code = 'team'").fetchone()["id"]
+
+    def test_T1_SUB_06_team_plan_is_hidden_and_cannot_be_bought(self):
+        codes = [plan["code"] for plan in self.request(self.learner, "/api/dashboard")["plans"]]
+        self.assertEqual(codes, ["starter", "plus"])
+        session_codes = [plan["code"] for plan in self.request(self.learner, "/api/session")["plans"]]
+        self.assertNotIn("team", session_codes)
+        before = self.billing_snapshot()
+        for payload in ({"plan_id": self.team_plan_id()}, {"plan_id": self.team_plan_id(), "confirm": True}):
+            with self.subTest(payload=payload):
+                body = self.request(self.learner, "/api/subscription", "POST", payload, expected=400)
+                self.assertIn("no longer offered", body["error"])
+        self.assertEqual(self.billing_snapshot(), before)
+        self.assertEqual(self.active()["plan_code"], "starter")
+
+    def test_T1_SUB_07_existing_team_learner_still_sees_and_renews_team(self):
+        team_id = self.team_plan_id()
+        with server.connect_db() as connection:
+            connection.execute(
+                "UPDATE subscriptions SET plan_id = ? WHERE user_id = ? AND status = 'active'",
+                (team_id, self.learner_id),
+            )
+            connection.commit()
+        codes = [plan["code"] for plan in self.request(self.learner, "/api/dashboard")["plans"]]
+        self.assertIn("team", codes)
+        start_end = date.fromisoformat(self.active()["end_date"])
+        self.request(self.learner, "/api/subscription", "POST", {"plan_id": team_id, "confirm": True})
+        self.assertEqual(self.active()["plan_code"], "team")
+        self.assertEqual(self.active()["end_date"], (start_end + timedelta(days=30)).isoformat())
 
     # -- T3: one completion rule ----------------------------------------
 
